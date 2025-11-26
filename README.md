@@ -346,6 +346,9 @@ module-path = "src/lib.zig"
 git clone https://github.com/dzonerzy/PyOZ.git
 cd PyOZ
 
+# Enable git hooks (validates version tags)
+git config core.hooksPath .githooks
+
 # Build CLI
 zig build cli
 
@@ -358,6 +361,17 @@ zig build test
 # Cross-compile for all platforms
 zig build release
 ```
+
+## Releasing
+
+PyOZ uses a pre-push hook to ensure version tags match `src/version.zig`:
+
+1. Update `src/version.zig` with the new version
+2. Commit: `git commit -am "Bump version to X.Y.Z"`
+3. Tag: `git tag vX.Y.Z`
+4. Push: `git push && git push --tags`
+
+If the tag doesn't match `version.zig`, the push will be blocked.
 
 ## Requirements
 
