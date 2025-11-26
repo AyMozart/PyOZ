@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PyIter_Check()` and `PyObject_IsIterable()` Python C API bindings
 - `Iterator(T)` and `LazyIterator(T, State)` types for returning iterators (placeholder for future)
 
+### Fixed
+- **Use-after-free bug in Path conversion for pathlib.Path objects** - Python 3.9 compatibility
+  - `PyPath_AsString()` was decref'ing the string before returning, causing segfaults
+  - Added `PyPath_AsStringWithRef()` to return both string slice and owning PyObject
+  - Path struct now stores Python object reference and releases it after function call
+  - Proper cleanup in function wrappers ensures no memory leaks
+
 ### Changed
 - **Major internal refactoring of class generation** - Improved maintainability
   - Split monolithic `class.zig` (2,887 lines) into 16 modular files
