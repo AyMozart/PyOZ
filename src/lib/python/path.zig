@@ -58,13 +58,18 @@ pub const PathStringResult = struct {
     py_str: *PyObject,
 };
 
-/// Get string from a path-like object using os.fspath()
+/// Get string from a path-like object by calling __fspath__() directly
 /// Returns both the string slice and the owning PyObject.
 /// The caller is responsible for calling Py_DecRef on py_str when done.
 pub fn PyPath_AsStringWithRef(obj: *PyObject) ?PathStringResult {
-    // Call os.fspath() on the object to get the string representation
-    const fspath_result = c.PyOS_FSPath(obj) orelse return null;
-    // NOTE: We do NOT decref here - caller takes ownership
+    // Call __fspath__() method directly on the object
+    // This is more reliable than PyOS_FSPath which has issues on some Python versions
+    const fspath_method = c.PyObject_GetAttrString(obj, "__fspath__") orelse return null;
+    defer Py_DecRef(fspath_method);
+
+    // Call the method with no arguments
+    const fspath_result = c.PyObject_CallObject(fspath_method, null) orelse return null;
+    // NOTE: We do NOT decref fspath_result here - caller takes ownership
 
     // Convert to string
     if (PyUnicode_Check(fspath_result)) {
