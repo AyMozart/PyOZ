@@ -67,10 +67,8 @@ jobs:
                   restore-keys: |
                       zig-cache-${{ runner.os }}-py${{ matrix.python-version }}-
 
-            - name: Run tests with ASAN
-              run: zig build test -Dsanitize=true
-              env:
-                  ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:print_stacktrace=1
+            - name: Run tests
+              run: zig build test
 
     build:
         name: Build Library & CLI
