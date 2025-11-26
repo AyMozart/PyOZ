@@ -2,7 +2,7 @@
 // This file is automatically parsed by build.zig for embed and metadata
 
 pub const major: u8 = 0;
-pub const minor: u8 = 2;
+pub const minor: u8 = 3;
 pub const patch: u8 = 0;
 
 /// Pre-release identifier (e.g., "alpha", "beta", "rc1", or null for release)
@@ -52,10 +52,10 @@ test "version string format" {
 
 test "version comparison" {
     const testing = std.testing;
-    try testing.expect(compare(0, 2, 0) == .equal);
-    try testing.expect(compare(0, 1, 9) == .greater);
+    try testing.expect(compare(0, 3, 0) == .equal);
+    try testing.expect(compare(0, 2, 9) == .greater);
     try testing.expect(compare(1, 0, 0) == .less);
+    try testing.expect(isAtLeast(0, 3, 0));
     try testing.expect(isAtLeast(0, 2, 0));
-    try testing.expect(isAtLeast(0, 1, 0));
     try testing.expect(!isAtLeast(1, 0, 0));
 }

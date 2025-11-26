@@ -112,6 +112,7 @@ PyOZ automatically converts between Python and Zig types:
 | `dict` | `pyoz.DictView(K, V)`, `pyoz.Dict(K, V)` |
 | `set` | `pyoz.SetView(T)`, `pyoz.Set(T)` |
 | `frozenset` | `pyoz.FrozenSet(T)` |
+| any iterable | `pyoz.IteratorView(T)` |
 | `tuple` | Zig tuple structs |
 | `None` | `?T` (optional) |
 | `complex` | `pyoz.Complex` |
@@ -295,6 +296,112 @@ fn heavy_numpy_work(arr: pyoz.BufferView(f64)) f64 {
     return sum;
 }
 ```
+
+## Iterators (Universal Iterable Support)
+
+PyOZ provides `IteratorView(T)` for accepting **any** Python iterable - lists, tuples, sets, generators, ranges, or any object with `__iter__`.
+
+### Basic Usage
+
+```zig
+const pyoz = @import("PyOZ");
+
+// Works with ANY Python iterable!
+fn sum_all(items: pyoz.IteratorView(i64)) i64 {
+    var iter = items;
+    var total: i64 = 0;
+    while (iter.next()) |value| {
+        total += value;
+    }
+    return total;
+}
+
+fn find_max(items: pyoz.IteratorView(i64)) ?i64 {
+    var iter = items;
+    var max_val: ?i64 = null;
+    while (iter.next()) |value| {
+        if (max_val == null or value > max_val.?) {
+            max_val = value;
+        }
+    }
+    return max_val;
+}
+
+fn average(items: pyoz.IteratorView(f64)) ?f64 {
+    var iter = items;
+    var sum: f64 = 0;
+    var count: usize = 0;
+    while (iter.next()) |value| {
+        sum += value;
+        count += 1;
+    }
+    if (count == 0) return null;
+    return sum / @as(f64, @floatFromInt(count));
+}
+
+const MyModule = pyoz.module(.{
+    .name = "mymodule",
+    .funcs = &.{
+        pyoz.func("sum_all", sum_all, "Sum any iterable of integers"),
+        pyoz.func("find_max", find_max, "Find max in any iterable"),
+        pyoz.func("average", average, "Calculate average of any iterable"),
+    },
+});
+```
+
+Use from Python - works with **any iterable**:
+
+```python
+import mymodule
+
+# Lists
+mymodule.sum_all([1, 2, 3, 4, 5])  # 15
+
+# Tuples
+mymodule.sum_all((10, 20, 30))  # 60
+
+# Sets
+mymodule.sum_all({100, 200, 300})  # 600
+
+# Ranges
+mymodule.sum_all(range(1, 101))  # 5050
+
+# Generators
+mymodule.sum_all(x * x for x in range(10))  # 285
+
+# Any iterator
+mymodule.sum_all(iter([1, 2, 3]))  # 6
+
+# Dict keys (dicts are iterable over keys)
+mymodule.sum_all({1: 'a', 2: 'b', 3: 'c'})  # 6
+```
+
+### IteratorView API
+
+```zig
+var iter = items;           // Create mutable copy to iterate
+
+// Core iteration
+iter.next()                 // ?T - get next item or null when exhausted
+
+// Convenience methods
+iter.count()                // usize - count remaining items (consumes iterator)
+iter.collect(allocator)     // ![]T - collect all items into allocated slice
+iter.forEach(func)          // void - apply function to each item
+iter.find(predicate)        // ?T - find first matching item
+iter.any(predicate)         // bool - check if any item matches
+iter.all(predicate)         // bool - check if all items match
+```
+
+### When to Use Each Collection Type
+
+| Type | Use When |
+|------|----------|
+| `IteratorView(T)` | Accept **any** iterable (most flexible) |
+| `ListView(T)` | Need list-specific features (indexing, length upfront) |
+| `SetView(T)` | Need set-specific features (`contains` check) |
+| `DictView(K, V)` | Need dict-specific features (key-value access) |
+| `[]const T` | Need a concrete Zig slice (allocates/copies) |
 
 ## Classes
 

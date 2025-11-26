@@ -1,0 +1,242 @@
+//! Properties (getset) generation for class generation
+//!
+//! Generates getters and setters for struct fields and computed properties
+
+const std = @import("std");
+const py = @import("../python.zig");
+const conversion = @import("../conversion.zig");
+
+fn getConversions() type {
+    return conversion.Conversions;
+}
+
+/// Build properties for a given type
+pub fn PropertiesBuilder(comptime T: type, comptime Parent: type) type {
+    const struct_info = @typeInfo(T).@"struct";
+    const fields = struct_info.fields;
+
+    return struct {
+        // Check if struct has custom getter or setter
+        pub fn hasCustomGetter(comptime field_name: []const u8) bool {
+            const getter_name = "get_" ++ field_name;
+            return @hasDecl(T, getter_name);
+        }
+
+        pub fn hasCustomSetter(comptime field_name: []const u8) bool {
+            const setter_name = "set_" ++ field_name;
+            return @hasDecl(T, setter_name);
+        }
+
+        // Count computed properties
+        fn countComputedProperties() usize {
+            const type_decls = @typeInfo(T).@"struct".decls;
+            var count: usize = 0;
+            for (type_decls) |decl| {
+                if (decl.name.len > 4 and std.mem.startsWith(u8, decl.name, "get_")) {
+                    const prop_name = decl.name[4..];
+                    var is_field = false;
+                    for (fields) |field| {
+                        if (std.mem.eql(u8, field.name, prop_name)) {
+                            is_field = true;
+                            break;
+                        }
+                    }
+                    if (!is_field) {
+                        count += 1;
+                    }
+                }
+            }
+            return count;
+        }
+
+        pub const computed_props_count = countComputedProperties();
+        pub const total_getset_count = fields.len + computed_props_count + 1;
+
+        /// Check if class is frozen
+        pub fn isFrozen() bool {
+            if (@hasDecl(T, "__frozen__")) {
+                const FrozenType = @TypeOf(T.__frozen__);
+                if (FrozenType == bool) {
+                    return T.__frozen__;
+                }
+            }
+            return false;
+        }
+
+        /// Get property docstring
+        pub fn getPropertyDoc(comptime prop_name: []const u8) ?[*:0]const u8 {
+            const doc_name = prop_name ++ "__doc__";
+            if (@hasDecl(T, doc_name)) {
+                const DocType = @TypeOf(@field(T, doc_name));
+                if (DocType != [*:0]const u8) {
+                    @compileError(doc_name ++ " must be declared as [*:0]const u8");
+                }
+                return @field(T, doc_name);
+            }
+            return null;
+        }
+
+        pub var getset: [total_getset_count]py.PyGetSetDef = blk: {
+            var gs: [total_getset_count]py.PyGetSetDef = undefined;
+
+            // Field-based getters/setters
+            for (fields, 0..) |field, idx| {
+                gs[idx] = .{
+                    .name = @ptrCast(field.name.ptr),
+                    .get = @ptrCast(generateGetter(field.name, field.type)),
+                    .set = if (isFrozen()) null else @ptrCast(generateSetter(field.name, field.type)),
+                    .doc = getPropertyDoc(field.name),
+                    .closure = null,
+                };
+            }
+
+            // Computed properties
+            var comp_idx: usize = fields.len;
+            const type_decls = @typeInfo(T).@"struct".decls;
+            for (type_decls) |decl| {
+                if (decl.name.len > 4 and std.mem.startsWith(u8, decl.name, "get_")) {
+                    const prop_name = decl.name[4..];
+                    var is_field = false;
+                    for (fields) |field| {
+                        if (std.mem.eql(u8, field.name, prop_name)) {
+                            is_field = true;
+                            break;
+                        }
+                    }
+                    if (!is_field) {
+                        gs[comp_idx] = .{
+                            .name = @ptrCast(prop_name.ptr),
+                            .get = @ptrCast(generateComputedGetter(prop_name)),
+                            .set = if (isFrozen()) null else @ptrCast(generateComputedSetter(prop_name)),
+                            .doc = getPropertyDoc(prop_name),
+                            .closure = null,
+                        };
+                        comp_idx += 1;
+                    }
+                }
+            }
+
+            // Sentinel
+            gs[total_getset_count - 1] = .{
+                .name = null,
+                .get = null,
+                .set = null,
+                .doc = null,
+                .closure = null,
+            };
+
+            break :blk gs;
+        };
+
+        fn generateGetter(comptime field_name: []const u8, comptime FieldType: type) *const fn (?*py.PyObject, ?*anyopaque) callconv(.c) ?*py.PyObject {
+            if (comptime hasCustomGetter(field_name)) {
+                return struct {
+                    fn get(self_obj: ?*py.PyObject, closure: ?*anyopaque) callconv(.c) ?*py.PyObject {
+                        _ = closure;
+                        const self: *Parent.PyWrapper = @ptrCast(@alignCast(self_obj orelse return null));
+                        const custom_getter = @field(T, "get_" ++ field_name);
+                        const result = custom_getter(self.getDataConst());
+                        return getConversions().toPy(@TypeOf(result), result);
+                    }
+                }.get;
+            }
+            return struct {
+                fn get(self_obj: ?*py.PyObject, closure: ?*anyopaque) callconv(.c) ?*py.PyObject {
+                    _ = closure;
+                    const self: *Parent.PyWrapper = @ptrCast(@alignCast(self_obj orelse return null));
+                    const value = @field(self.getDataConst().*, field_name);
+                    return getConversions().toPy(FieldType, value);
+                }
+            }.get;
+        }
+
+        fn generateSetter(comptime field_name: []const u8, comptime FieldType: type) *const fn (?*py.PyObject, ?*py.PyObject, ?*anyopaque) callconv(.c) c_int {
+            if (comptime hasCustomSetter(field_name)) {
+                return struct {
+                    fn set(self_obj: ?*py.PyObject, value: ?*py.PyObject, closure: ?*anyopaque) callconv(.c) c_int {
+                        _ = closure;
+                        const self: *Parent.PyWrapper = @ptrCast(@alignCast(self_obj orelse return -1));
+                        const py_value = value orelse {
+                            py.PyErr_SetString(py.PyExc_AttributeError(), "Cannot delete attribute");
+                            return -1;
+                        };
+                        const custom_setter = @field(T, "set_" ++ field_name);
+                        const SetterType = @TypeOf(custom_setter);
+                        const setter_info = @typeInfo(SetterType).@"fn";
+                        const ValueType = setter_info.params[1].type.?;
+                        const converted = getConversions().fromPy(ValueType, py_value) catch {
+                            py.PyErr_SetString(py.PyExc_TypeError(), "Failed to convert value for: " ++ field_name);
+                            return -1;
+                        };
+                        const RetType = setter_info.return_type orelse void;
+                        if (@typeInfo(RetType) == .error_union) {
+                            custom_setter(self.getData(), converted) catch |err| {
+                                const msg = @errorName(err);
+                                py.PyErr_SetString(py.PyExc_ValueError(), msg.ptr);
+                                return -1;
+                            };
+                        } else {
+                            custom_setter(self.getData(), converted);
+                        }
+                        return 0;
+                    }
+                }.set;
+            }
+            return struct {
+                fn set(self_obj: ?*py.PyObject, value: ?*py.PyObject, closure: ?*anyopaque) callconv(.c) c_int {
+                    _ = closure;
+                    const self: *Parent.PyWrapper = @ptrCast(@alignCast(self_obj orelse return -1));
+                    const py_value = value orelse {
+                        py.PyErr_SetString(py.PyExc_AttributeError(), "Cannot delete attribute");
+                        return -1;
+                    };
+                    @field(self.getData().*, field_name) = getConversions().fromPy(FieldType, py_value) catch {
+                        py.PyErr_SetString(py.PyExc_TypeError(), "Failed to convert value for: " ++ field_name);
+                        return -1;
+                    };
+                    return 0;
+                }
+            }.set;
+        }
+
+        fn generateComputedGetter(comptime prop_name: []const u8) *const fn (?*py.PyObject, ?*anyopaque) callconv(.c) ?*py.PyObject {
+            const getter_name = "get_" ++ prop_name;
+            return struct {
+                fn get(self_obj: ?*py.PyObject, closure: ?*anyopaque) callconv(.c) ?*py.PyObject {
+                    _ = closure;
+                    const self: *Parent.PyWrapper = @ptrCast(@alignCast(self_obj orelse return null));
+                    const getter = @field(T, getter_name);
+                    const result = getter(self.getDataConst());
+                    return getConversions().toPy(@TypeOf(result), result);
+                }
+            }.get;
+        }
+
+        fn generateComputedSetter(comptime prop_name: []const u8) ?*const fn (?*py.PyObject, ?*py.PyObject, ?*anyopaque) callconv(.c) c_int {
+            const setter_name = "set_" ++ prop_name;
+            if (!@hasDecl(T, setter_name)) {
+                return null;
+            }
+            return struct {
+                fn set(self_obj: ?*py.PyObject, value: ?*py.PyObject, closure: ?*anyopaque) callconv(.c) c_int {
+                    _ = closure;
+                    const self: *Parent.PyWrapper = @ptrCast(@alignCast(self_obj orelse return -1));
+                    const py_value = value orelse {
+                        py.PyErr_SetString(py.PyExc_AttributeError(), "Cannot delete property: " ++ prop_name);
+                        return -1;
+                    };
+                    const setter = @field(T, setter_name);
+                    const SetterType = @TypeOf(setter);
+                    const setter_info = @typeInfo(SetterType).@"fn";
+                    const ValueType = setter_info.params[1].type.?;
+                    const converted = getConversions().fromPy(ValueType, py_value) catch {
+                        py.PyErr_SetString(py.PyExc_TypeError(), "Failed to convert value for property: " ++ prop_name);
+                        return -1;
+                    };
+                    setter(self.getData(), converted);
+                    return 0;
+                }
+            }.set;
+        }
+    };
+}

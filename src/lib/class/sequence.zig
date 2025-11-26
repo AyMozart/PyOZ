@@ -1,0 +1,121 @@
+//! Sequence protocol for class generation
+//!
+//! Implements __len__, __getitem__, __setitem__, __delitem__, __contains__
+
+const std = @import("std");
+const py = @import("../python.zig");
+const conversion = @import("../conversion.zig");
+
+fn getConversions() type {
+    return conversion.Conversions;
+}
+
+/// Build sequence protocol for a given type
+pub fn SequenceProtocol(comptime T: type, comptime Parent: type) type {
+    return struct {
+        pub fn hasSequenceMethods() bool {
+            return @hasDecl(T, "__len__") or @hasDecl(T, "__getitem__") or
+                @hasDecl(T, "__contains__") or @hasDecl(T, "__reversed__");
+        }
+
+        pub var sequence_methods: py.PySequenceMethods = makeSequenceMethods();
+
+        fn makeSequenceMethods() py.PySequenceMethods {
+            var sm: py.PySequenceMethods = std.mem.zeroes(py.PySequenceMethods);
+
+            if (@hasDecl(T, "__len__")) sm.sq_length = @ptrCast(&py_sq_length);
+            if (@hasDecl(T, "__getitem__")) sm.sq_item = @ptrCast(&py_sq_item);
+            if (@hasDecl(T, "__setitem__") or @hasDecl(T, "__delitem__")) sm.sq_ass_item = @ptrCast(&py_sq_ass_item);
+            if (@hasDecl(T, "__contains__")) sm.sq_contains = @ptrCast(&py_sq_contains);
+
+            return sm;
+        }
+
+        fn py_sq_length(self_obj: ?*py.PyObject) callconv(.c) py.Py_ssize_t {
+            const self: *Parent.PyWrapper = @ptrCast(@alignCast(self_obj orelse return -1));
+            const result = T.__len__(self.getDataConst());
+            return @intCast(result);
+        }
+
+        fn py_sq_item(self_obj: ?*py.PyObject, index: py.Py_ssize_t) callconv(.c) ?*py.PyObject {
+            const self: *Parent.PyWrapper = @ptrCast(@alignCast(self_obj orelse return null));
+            const GetItemRetType = @typeInfo(@TypeOf(T.__getitem__)).@"fn".return_type.?;
+            if (@typeInfo(GetItemRetType) == .error_union) {
+                const result = T.__getitem__(self.getDataConst(), @intCast(index)) catch |err| {
+                    const msg = @errorName(err);
+                    py.PyErr_SetString(py.PyExc_IndexError(), msg.ptr);
+                    return null;
+                };
+                return getConversions().toPy(@TypeOf(result), result);
+            } else {
+                const result = T.__getitem__(self.getDataConst(), @intCast(index));
+                return getConversions().toPy(GetItemRetType, result);
+            }
+        }
+
+        fn py_sq_contains(self_obj: ?*py.PyObject, value_obj: ?*py.PyObject) callconv(.c) c_int {
+            const self: *Parent.PyWrapper = @ptrCast(@alignCast(self_obj orelse return -1));
+            const value = value_obj orelse return -1;
+
+            const ContainsFn = @TypeOf(T.__contains__);
+            const fn_info = @typeInfo(ContainsFn).@"fn";
+            const ElemType = fn_info.params[1].type.?;
+
+            const elem = getConversions().fromPy(ElemType, value) catch {
+                return 0;
+            };
+
+            const result = T.__contains__(self.getDataConst(), elem);
+            return if (result) 1 else 0;
+        }
+
+        fn py_sq_ass_item(self_obj: ?*py.PyObject, index: py.Py_ssize_t, value_obj: ?*py.PyObject) callconv(.c) c_int {
+            const self: *Parent.PyWrapper = @ptrCast(@alignCast(self_obj orelse return -1));
+
+            if (value_obj) |value| {
+                if (!@hasDecl(T, "__setitem__")) {
+                    py.PyErr_SetString(py.PyExc_TypeError(), "object does not support item assignment");
+                    return -1;
+                }
+
+                const SetItemFn = @TypeOf(T.__setitem__);
+                const set_fn_info = @typeInfo(SetItemFn).@"fn";
+                const ValueType = set_fn_info.params[2].type.?;
+
+                const zig_value = getConversions().fromPy(ValueType, value) catch {
+                    py.PyErr_SetString(py.PyExc_TypeError(), "invalid value type for __setitem__");
+                    return -1;
+                };
+
+                const SetRetType = set_fn_info.return_type.?;
+                if (@typeInfo(SetRetType) == .error_union) {
+                    T.__setitem__(self.getData(), @intCast(index), zig_value) catch |err| {
+                        const msg = @errorName(err);
+                        py.PyErr_SetString(py.PyExc_IndexError(), msg.ptr);
+                        return -1;
+                    };
+                } else {
+                    T.__setitem__(self.getData(), @intCast(index), zig_value);
+                }
+                return 0;
+            } else {
+                if (!@hasDecl(T, "__delitem__")) {
+                    py.PyErr_SetString(py.PyExc_TypeError(), "object does not support item deletion");
+                    return -1;
+                }
+
+                const DelRetType = @typeInfo(@TypeOf(T.__delitem__)).@"fn".return_type.?;
+                if (@typeInfo(DelRetType) == .error_union) {
+                    T.__delitem__(self.getData(), @intCast(index)) catch |err| {
+                        const msg = @errorName(err);
+                        py.PyErr_SetString(py.PyExc_IndexError(), msg.ptr);
+                        return -1;
+                    };
+                } else {
+                    T.__delitem__(self.getData(), @intCast(index));
+                }
+                return 0;
+            }
+        }
+    };
+}

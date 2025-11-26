@@ -261,6 +261,104 @@ fn make_frozenset() pyoz.FrozenSet([]const u8) {
 }
 
 // ============================================================================
+// Iterator examples - IteratorView can accept ANY iterable
+// ============================================================================
+
+/// Sum all integers from any iterable (list, tuple, set, generator, etc.)
+fn iter_sum(items: pyoz.IteratorView(i64)) i64 {
+    var iter = items;
+    var total: i64 = 0;
+    while (iter.next()) |value| {
+        total += value;
+    }
+    return total;
+}
+
+/// Count items in any iterable
+fn iter_count(items: pyoz.IteratorView(i64)) i64 {
+    var iter = items;
+    return @intCast(iter.count());
+}
+
+/// Find the maximum value in any iterable of integers
+fn iter_max(items: pyoz.IteratorView(i64)) ?i64 {
+    var iter = items;
+    var max_val: ?i64 = null;
+    while (iter.next()) |value| {
+        if (max_val == null or value > max_val.?) {
+            max_val = value;
+        }
+    }
+    return max_val;
+}
+
+/// Find the minimum value in any iterable of integers
+fn iter_min(items: pyoz.IteratorView(i64)) ?i64 {
+    var iter = items;
+    var min_val: ?i64 = null;
+    while (iter.next()) |value| {
+        if (min_val == null or value < min_val.?) {
+            min_val = value;
+        }
+    }
+    return min_val;
+}
+
+/// Calculate the product of all integers in an iterable
+fn iter_product(items: pyoz.IteratorView(i64)) i64 {
+    var iter = items;
+    var product: i64 = 1;
+    while (iter.next()) |value| {
+        product *= value;
+    }
+    return product;
+}
+
+/// Join strings from any iterable with a separator
+fn iter_join(items: pyoz.IteratorView([]const u8), sep: []const u8) []const u8 {
+    var iter = items;
+    // For simplicity, we'll just concatenate the first few items
+    // In a real implementation, you'd use an allocator
+    var result: [1024]u8 = undefined;
+    var pos: usize = 0;
+    var first = true;
+
+    while (iter.next()) |s| {
+        if (!first and pos + sep.len < result.len) {
+            @memcpy(result[pos .. pos + sep.len], sep);
+            pos += sep.len;
+        }
+        first = false;
+
+        const copy_len = @min(s.len, result.len - pos);
+        if (copy_len > 0) {
+            @memcpy(result[pos .. pos + copy_len], s[0..copy_len]);
+            pos += copy_len;
+        }
+    }
+
+    // Return static buffer (valid for the duration of the Python call)
+    const static = struct {
+        var buf: [1024]u8 = undefined;
+    };
+    @memcpy(static.buf[0..pos], result[0..pos]);
+    return static.buf[0..pos];
+}
+
+/// Calculate average of floats from any iterable
+fn iter_average(items: pyoz.IteratorView(f64)) ?f64 {
+    var iter = items;
+    var sum: f64 = 0;
+    var count: usize = 0;
+    while (iter.next()) |value| {
+        sum += value;
+        count += 1;
+    }
+    if (count == 0) return null;
+    return sum / @as(f64, @floatFromInt(count));
+}
+
+// ============================================================================
 // DateTime examples
 // ============================================================================
 
@@ -2308,6 +2406,14 @@ const Example = pyoz.module(.{
         pyoz.func("set_has", set_has, "Check if set contains value"),
         pyoz.func("make_set", make_set, "Return a set of integers"),
         pyoz.func("make_frozenset", make_frozenset, "Return a frozen set of strings"),
+        // Iterator functions - work with ANY iterable (list, tuple, set, generator, etc.)
+        pyoz.func("iter_sum", iter_sum, "Sum integers from any iterable"),
+        pyoz.func("iter_count", iter_count, "Count items in any iterable"),
+        pyoz.func("iter_max", iter_max, "Find max value in any iterable"),
+        pyoz.func("iter_min", iter_min, "Find min value in any iterable"),
+        pyoz.func("iter_product", iter_product, "Calculate product of integers in any iterable"),
+        pyoz.func("iter_join", iter_join, "Join strings from any iterable"),
+        pyoz.func("iter_average", iter_average, "Calculate average of floats from any iterable"),
         // DateTime functions
         pyoz.func("datetime_parts", datetime_parts, "Get datetime components as tuple"),
         pyoz.func("date_parts", date_parts, "Get date components as tuple"),

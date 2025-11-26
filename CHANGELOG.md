@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2025-11-26
+
+### Added
+- **Universal iterator support via IteratorView** - Accept any Python iterable
+  - `IteratorView(T)` for accepting any iterable (list, tuple, set, generator, range, etc.)
+  - Methods: `next()`, `count()`, `collect()`, `forEach()`, `find()`, `any()`, `all()`
+  - Zero-copy: wraps Python iterator directly, no data copying
+  - Works with generators, ranges, and custom iterables
+- `PyIter_Check()` and `PyObject_IsIterable()` Python C API bindings
+- `Iterator(T)` and `LazyIterator(T, State)` types for returning iterators (placeholder for future)
+
+### Changed
+- **Major internal refactoring of class generation** - Improved maintainability
+  - Split monolithic `class.zig` (2,887 lines) into 16 modular files
+  - New `src/lib/class/` directory with protocol-specific modules:
+    - `mod.zig` - Main orchestrator combining all protocols
+    - `wrapper.zig` - PyWrapper struct builder
+    - `lifecycle.zig` - Object lifecycle (new, init, dealloc)
+    - `number.zig` - Number protocol (~700 lines of numeric operations)
+    - `sequence.zig` - Sequence protocol
+    - `mapping.zig` - Mapping protocol
+    - `comparison.zig` - Rich comparison
+    - `repr.zig` - String representation (__repr__, __str__, __hash__)
+    - `iterator.zig` - Iterator protocol (__iter__, __next__)
+    - `buffer.zig` - Buffer protocol
+    - `descriptor.zig` - Descriptor protocol
+    - `attributes.zig` - Attribute access (__getattr__, __setattr__)
+    - `callable.zig` - Callable protocol (__call__)
+    - `properties.zig` - Property generation (getters/setters)
+    - `methods.zig` - Method wrappers (instance, static, class)
+    - `gc.zig` - Garbage collection support
+  - All comptime generation preserved - no functionality changes
+  - Public API unchanged - fully backward compatible
+
 ## [0.2.0] - 2025-11-26
 
 ### Added

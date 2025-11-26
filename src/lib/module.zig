@@ -4,7 +4,11 @@
 
 const std = @import("std");
 const py = @import("python.zig");
-const root = @import("root.zig");
+
+/// Error types for module operations
+pub const PyErr = error{
+    RuntimeError,
+};
 
 /// A wrapper around a Python module object
 pub const Module = struct {
@@ -15,7 +19,7 @@ pub const Module = struct {
     /// Create a new module from a module definition
     pub fn create(def: *py.PyModuleDef) !Self {
         const module = py.PyModule_Create(def) orelse {
-            return root.PyErr.RuntimeError;
+            return PyErr.RuntimeError;
         };
         return .{ .ptr = module };
     }
@@ -28,21 +32,21 @@ pub const Module = struct {
     /// Add an integer constant to the module
     pub fn addIntConstant(self: Self, name: [*:0]const u8, value: c_long) !void {
         if (py.c.PyModule_AddIntConstant(self.ptr, name, value) < 0) {
-            return root.PyErr.RuntimeError;
+            return PyErr.RuntimeError;
         }
     }
 
     /// Add a string constant to the module
     pub fn addStringConstant(self: Self, name: [*:0]const u8, value: [*:0]const u8) !void {
         if (py.c.PyModule_AddStringConstant(self.ptr, name, value) < 0) {
-            return root.PyErr.RuntimeError;
+            return PyErr.RuntimeError;
         }
     }
 
     /// Add a Python object to the module (steals reference)
     pub fn addObject(self: Self, name: [*:0]const u8, value: *py.PyObject) !void {
         if (py.c.PyModule_AddObject(self.ptr, name, value) < 0) {
-            return root.PyErr.RuntimeError;
+            return PyErr.RuntimeError;
         }
     }
 
@@ -51,7 +55,7 @@ pub const Module = struct {
         py.Py_IncRef(value);
         if (py.c.PyModule_AddObject(self.ptr, name, value) < 0) {
             py.Py_DecRef(value);
-            return root.PyErr.RuntimeError;
+            return PyErr.RuntimeError;
         }
     }
 
@@ -85,7 +89,7 @@ pub const Module = struct {
 
         // Create the submodule
         const submodule = py.PyModule_Create(&sub_def_mut) orelse {
-            return root.PyErr.RuntimeError;
+            return PyErr.RuntimeError;
         };
 
         // Add it to the parent module
