@@ -93,20 +93,23 @@ pub inline fn PyBuffer_FillInfo(view: *Py_buffer, obj: ?*PyObject, buf: ?*anyopa
 }
 
 // GIL (Global Interpreter Lock) control
-pub const PyThreadState = c.PyThreadState;
+// Note: We define PyThreadState as opaque to avoid cImport issues with Python 3.12+
+// where the struct contains anonymous structs/unions that Zig can't translate.
+// We only use it as an opaque pointer anyway.
+pub const PyThreadState = opaque {};
 pub const PyGILState_STATE = c.PyGILState_STATE;
 
 /// Release the GIL, allowing other Python threads to run.
 /// Returns a token that must be passed to PyEval_RestoreThread to reacquire.
 /// Use this before CPU-intensive Zig code that doesn't touch Python objects.
 pub inline fn PyEval_SaveThread() ?*PyThreadState {
-    return c.PyEval_SaveThread();
+    return @ptrCast(c.PyEval_SaveThread());
 }
 
 /// Reacquire the GIL after releasing it with PyEval_SaveThread.
 /// Must pass the token returned by PyEval_SaveThread.
 pub inline fn PyEval_RestoreThread(state: ?*PyThreadState) void {
-    c.PyEval_RestoreThread(state);
+    c.PyEval_RestoreThread(@ptrCast(@alignCast(state)));
 }
 
 /// Acquire the GIL from a non-Python thread.
