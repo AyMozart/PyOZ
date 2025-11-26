@@ -444,8 +444,7 @@ const build_zig_zon_template =
     \\    .fingerprint = {[fingerprint]s},
     \\    .dependencies = .{
     \\        .PyOZ = .{
-    \\            // TODO: Update with actual PyOZ package URL when published
-    \\            .url = "https://github.com/user/pyoz/archive/refs/tags/v{[pyoz_version]s}.tar.gz",
+    \\            .url = "https://github.com/dzonerzy/PyOZ/archive/refs/tags/v{[pyoz_version]s}.tar.gz",
     \\            // .hash = "...",
     \\        },
     \\    },
@@ -461,7 +460,7 @@ const build_zig_zon_template =
 const readme_template =
     \\# {[name]s}
     \\
-    \\A Python extension module built with [PyOZ](https://github.com/user/pyoz).
+    \\A Python extension module built with [PyOZ](https://github.com/dzonerzy/PyOZ).
     \\
     \\## Building
     \\
