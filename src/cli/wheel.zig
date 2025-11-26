@@ -1,0 +1,244 @@
+const std = @import("std");
+const builtin = @import("builtin");
+const project = @import("project.zig");
+const builder = @import("builder.zig");
+const pypi = @import("pypi.zig");
+const zip = @import("zip.zig");
+
+/// Build a wheel package (.whl)
+/// A wheel is a ZIP file with a specific structure:
+///   {module}.{ext}                    - The compiled extension
+///   {distribution}-{version}.dist-info/
+///     WHEEL                           - Wheel metadata
+///     METADATA                        - Package metadata
+///     RECORD                          - File hashes
+pub fn buildWheel(allocator: std.mem.Allocator, release: bool) ![]const u8 {
+    // Load project configuration
+    var config = project.toml.loadPyProject(allocator) catch |err| {
+        if (err == error.PyProjectNotFound) {
+            std.debug.print("Error: pyproject.toml not found. Run 'pyoz init' first.\n", .{});
+            return err;
+        }
+        return err;
+    };
+    defer config.deinit(allocator);
+
+    // Detect Python for version tag
+    var python = builder.detectPython(allocator) catch |err| {
+        std.debug.print("Error: Could not detect Python.\n", .{});
+        return err;
+    };
+    defer python.deinit(allocator);
+
+    // Build the module first
+    var build_result = try builder.buildModule(allocator, release);
+    defer build_result.deinit(allocator);
+
+    std.debug.print("\nCreating wheel package...\n", .{});
+
+    // Create dist directory
+    const cwd = std.fs.cwd();
+    cwd.makeDir("dist") catch |err| {
+        if (err != error.PathAlreadyExists) return err;
+    };
+
+    // Generate wheel filename
+    // Format: {distribution}-{version}-{python}-{abi}-{platform}.whl
+    const platform_tag = getPlatformTag();
+    const python_tag = try std.fmt.allocPrint(allocator, "cp{d}{d}", .{ python.version_major, python.version_minor });
+    defer allocator.free(python_tag);
+
+    // Use abi3 for stable ABI compatibility (Python 3.2+)
+    const abi_tag = "abi3";
+
+    const wheel_filename = try std.fmt.allocPrint(
+        allocator,
+        "{s}-{s}-{s}-{s}-{s}.whl",
+        .{ config.name, config.getVersion(), python_tag, abi_tag, platform_tag },
+    );
+    defer allocator.free(wheel_filename);
+
+    const wheel_path = try std.fmt.allocPrint(allocator, "dist/{s}", .{wheel_filename});
+    errdefer allocator.free(wheel_path);
+
+    // Create the wheel (ZIP file)
+    try createWheelZip(allocator, wheel_path, &config, &python, build_result.module_path, build_result.module_name);
+
+    std.debug.print("\nWheel created: {s}\n", .{wheel_path});
+    std.debug.print("\nTo install locally: pip install {s}\n", .{wheel_path});
+    std.debug.print("To publish: pyoz publish\n", .{});
+
+    // Return owned path (caller must free)
+    return wheel_path;
+}
+
+fn createWheelZip(
+    allocator: std.mem.Allocator,
+    wheel_path: []const u8,
+    config: *const project.toml.PyProjectConfig,
+    python: *const builder.PythonConfig,
+    module_path: []const u8,
+    module_name: []const u8,
+) !void {
+    const cwd = std.fs.cwd();
+
+    // Delete existing wheel file if present
+    cwd.deleteFile(wheel_path) catch {};
+
+    // Create ZIP writer for the wheel
+    var z = try zip.ZipWriter.init(allocator, wheel_path);
+    defer z.deinit();
+
+    // Add the compiled module
+    try z.addFileFromDisk(module_name, module_path);
+
+    // Create dist-info directory name
+    const dist_info_name = try std.fmt.allocPrint(allocator, "{s}-{s}.dist-info", .{ config.name, config.getVersion() });
+    defer allocator.free(dist_info_name);
+
+    // Create WHEEL file content
+    const wheel_content = try std.fmt.allocPrint(allocator,
+        \\Wheel-Version: 1.0
+        \\Generator: pyoz
+        \\Root-Is-Purelib: false
+        \\Tag: cp{d}{d}-abi3-{s}
+        \\
+    , .{ python.version_major, python.version_minor, getPlatformTag() });
+    defer allocator.free(wheel_content);
+
+    const wheel_file_path = try std.fmt.allocPrint(allocator, "{s}/WHEEL", .{dist_info_name});
+    defer allocator.free(wheel_file_path);
+    try z.addFile(wheel_file_path, wheel_content);
+
+    // Create METADATA file content
+    const metadata_content = try std.fmt.allocPrint(allocator,
+        \\Metadata-Version: 2.1
+        \\Name: {s}
+        \\Version: {s}
+        \\Summary: {s}
+        \\Requires-Python: {s}
+        \\
+    , .{ config.name, config.getVersion(), config.description, config.getPythonRequires() });
+    defer allocator.free(metadata_content);
+
+    const metadata_file_path = try std.fmt.allocPrint(allocator, "{s}/METADATA", .{dist_info_name});
+    defer allocator.free(metadata_file_path);
+    try z.addFile(metadata_file_path, metadata_content);
+
+    // Create RECORD file content (list of files with hashes)
+    const record_content = try std.fmt.allocPrint(allocator,
+        \\{s},,
+        \\{s}/WHEEL,,
+        \\{s}/METADATA,,
+        \\{s}/RECORD,,
+        \\
+    , .{ module_name, dist_info_name, dist_info_name, dist_info_name });
+    defer allocator.free(record_content);
+
+    const record_file_path = try std.fmt.allocPrint(allocator, "{s}/RECORD", .{dist_info_name});
+    defer allocator.free(record_file_path);
+    try z.addFile(record_file_path, record_content);
+
+    // Finalize the ZIP file
+    try z.finish();
+}
+
+/// Get platform tag for wheel filename
+fn getPlatformTag() []const u8 {
+    return switch (builtin.os.tag) {
+        .linux => switch (builtin.cpu.arch) {
+            .x86_64 => "manylinux_2_17_x86_64",
+            .aarch64 => "manylinux_2_17_aarch64",
+            else => "linux_unknown",
+        },
+        .macos => switch (builtin.cpu.arch) {
+            .x86_64 => "macosx_10_9_x86_64",
+            .aarch64 => "macosx_11_0_arm64",
+            else => "macosx_unknown",
+        },
+        .windows => switch (builtin.cpu.arch) {
+            .x86_64 => "win_amd64",
+            .x86 => "win32",
+            .aarch64 => "win_arm64",
+            else => "win_unknown",
+        },
+        else => "unknown",
+    };
+}
+
+/// Publish wheel(s) to PyPI or TestPyPI
+pub fn publish(allocator: std.mem.Allocator, test_pypi: bool) !void {
+    const repo = if (test_pypi) pypi.Repository.testpypi else pypi.Repository.pypi;
+
+    std.debug.print("Publishing to {s}...\n\n", .{repo.name});
+
+    // Load project config
+    var config = project.toml.loadPyProject(allocator) catch |err| {
+        if (err == error.PyProjectNotFound) {
+            std.debug.print("Error: pyproject.toml not found.\n", .{});
+            return err;
+        }
+        return err;
+    };
+    defer config.deinit(allocator);
+
+    // Get credentials
+    const creds = pypi.getCredentials(allocator, repo) catch |err| {
+        if (err == error.NoCredentials) return err;
+        return err;
+    };
+    defer allocator.free(creds.username);
+    defer allocator.free(creds.password);
+
+    // Find wheel files in dist/
+    const cwd = std.fs.cwd();
+    var dist_dir = cwd.openDir("dist", .{ .iterate = true }) catch |err| {
+        if (err == error.FileNotFound) {
+            std.debug.print("Error: No dist/ directory. Run 'pyoz build' first.\n", .{});
+            return error.NoDistDir;
+        }
+        return err;
+    };
+    defer dist_dir.close();
+
+    // Collect wheel files
+    var wheels = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (wheels.items) |w| allocator.free(w);
+        wheels.deinit(allocator);
+    }
+
+    var iter = dist_dir.iterate();
+    while (try iter.next()) |entry| {
+        if (std.mem.endsWith(u8, entry.name, ".whl")) {
+            const wheel_path = try std.fmt.allocPrint(allocator, "dist/{s}", .{entry.name});
+            try wheels.append(allocator, wheel_path);
+        }
+    }
+
+    if (wheels.items.len == 0) {
+        std.debug.print("Error: No wheel files in dist/. Run 'pyoz build' first.\n", .{});
+        return error.NoWheels;
+    }
+
+    std.debug.print("Found {d} wheel(s) to upload:\n", .{wheels.items.len});
+    for (wheels.items) |w| {
+        std.debug.print("  {s}\n", .{w});
+    }
+    std.debug.print("\n", .{});
+
+    // Upload each wheel
+    for (wheels.items) |wheel_path| {
+        try pypi.uploadWheel(allocator, wheel_path, &config, repo, creds.username, creds.password);
+    }
+
+    std.debug.print("\nSuccessfully published to {s}!\n", .{repo.name});
+
+    if (test_pypi) {
+        std.debug.print("View at: https://test.pypi.org/project/{s}/\n", .{config.name});
+        std.debug.print("Install with: pip install -i https://test.pypi.org/simple/ {s}\n", .{config.name});
+    } else {
+        std.debug.print("View at: https://pypi.org/project/{s}/\n", .{config.name});
+        std.debug.print("Install with: pip install {s}\n", .{config.name});
+    }
+}
