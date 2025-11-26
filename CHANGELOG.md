@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2025-11-26
+
+### Added
+- **NumPy array support via BufferView** - Zero-copy access to numpy arrays
+  - `BufferView(T)` for read-only access to numpy arrays
+  - `BufferViewMut(T)` for mutable (in-place) access
+  - Supported dtypes: `f64`, `f32`, `i64`, `i32`, `i16`, `i8`, `u64`, `u32`, `u16`, `u8`
+  - Complex number support: `complex128` (`pyoz.Complex`), `complex64` (`pyoz.Complex32`)
+  - Both C-contiguous and Fortran-contiguous array layouts supported
+  - 2D array support with `rows()`, `cols()`, `get2D()`, `set2D()` methods
+  - Automatic buffer release after function call
+- `Complex32` type for 32-bit complex numbers (two f32s)
+- Complex number arithmetic methods: `add`, `sub`, `mul`, `conjugate`, `magnitude`
+- Comprehensive test suite for numpy/BufferView functionality
+- Fair comparison with Ziggy-Pydust in README documentation
+
 ## [0.1.2] - 2025-11-26
 
 ### Added

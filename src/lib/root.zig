@@ -59,14 +59,77 @@ pub const Py_ssize_t = py.Py_ssize_t;
 // Complex Number Support
 // ============================================================================
 
-/// A complex number type for use with __complex__ method
+/// A complex number type (complex128 - two f64s) for use with __complex__ method
 /// Return this from your __complex__ method to convert to Python complex
+/// Also usable with BufferView(Complex) for numpy complex128 arrays
 pub const Complex = struct {
     real: f64,
     imag: f64,
 
     pub fn init(real: f64, imag: f64) Complex {
         return .{ .real = real, .imag = imag };
+    }
+
+    pub fn add(self: Complex, other: Complex) Complex {
+        return .{ .real = self.real + other.real, .imag = self.imag + other.imag };
+    }
+
+    pub fn sub(self: Complex, other: Complex) Complex {
+        return .{ .real = self.real - other.real, .imag = self.imag - other.imag };
+    }
+
+    pub fn mul(self: Complex, other: Complex) Complex {
+        return .{
+            .real = self.real * other.real - self.imag * other.imag,
+            .imag = self.real * other.imag + self.imag * other.real,
+        };
+    }
+
+    pub fn conjugate(self: Complex) Complex {
+        return .{ .real = self.real, .imag = -self.imag };
+    }
+
+    pub fn magnitude(self: Complex) f64 {
+        return @sqrt(self.real * self.real + self.imag * self.imag);
+    }
+};
+
+/// A 32-bit complex number type (complex64 - two f32s)
+/// Usable with BufferView(Complex32) for numpy complex64 arrays
+pub const Complex32 = struct {
+    real: f32,
+    imag: f32,
+
+    pub fn init(real: f32, imag: f32) Complex32 {
+        return .{ .real = real, .imag = imag };
+    }
+
+    pub fn add(self: Complex32, other: Complex32) Complex32 {
+        return .{ .real = self.real + other.real, .imag = self.imag + other.imag };
+    }
+
+    pub fn sub(self: Complex32, other: Complex32) Complex32 {
+        return .{ .real = self.real - other.real, .imag = self.imag - other.imag };
+    }
+
+    pub fn mul(self: Complex32, other: Complex32) Complex32 {
+        return .{
+            .real = self.real * other.real - self.imag * other.imag,
+            .imag = self.real * other.imag + self.imag * other.real,
+        };
+    }
+
+    pub fn conjugate(self: Complex32) Complex32 {
+        return .{ .real = self.real, .imag = -self.imag };
+    }
+
+    pub fn magnitude(self: Complex32) f32 {
+        return @sqrt(self.real * self.real + self.imag * self.imag);
+    }
+
+    /// Convert to Complex (f64)
+    pub fn toComplex(self: Complex32) Complex {
+        return .{ .real = @floatCast(self.real), .imag = @floatCast(self.imag) };
     }
 };
 
@@ -759,6 +822,297 @@ pub fn FrozenSet(comptime T: type) type {
 }
 
 // ============================================================================
+// BufferView - Zero-copy access to numpy arrays and buffer protocol objects
+// ============================================================================
+
+/// Zero-copy view into a Python buffer (numpy array, bytes, memoryview, etc.)
+/// Use this as a function parameter type to receive numpy arrays without copying.
+///
+/// The view is valid only during the function call - do not store references to the data.
+/// For mutable access, use BufferViewMut(T).
+///
+/// Supported element types: i8, i16, i32, i64, u8, u16, u32, u64, f32, f64
+///
+/// Example:
+/// ```zig
+/// fn sum_array(arr: pyoz.BufferView(f64)) f64 {
+///     var total: f64 = 0;
+///     for (arr.data) |v| total += v;
+///     return total;
+/// }
+/// ```
+///
+/// Python usage:
+/// ```python
+/// import numpy as np
+/// arr = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+/// result = mymodule.sum_array(arr)  # Zero-copy!
+/// ```
+pub fn BufferView(comptime T: type) type {
+    return struct {
+        /// The underlying data as a Zig slice (read-only)
+        data: []const T,
+        /// Number of dimensions (1 for 1D array, 2 for 2D, etc.)
+        ndim: usize,
+        /// Shape of each dimension
+        shape: []const py.Py_ssize_t,
+        /// Strides for each dimension (in bytes)
+        strides: ?[]const py.Py_ssize_t,
+        /// The Python object (for reference counting)
+        _py_obj: *PyObject,
+        /// The buffer view (must be released)
+        _buffer: py.Py_buffer,
+
+        const Self = @This();
+        pub const ElementType = T;
+        pub const is_buffer_view = true;
+        pub const is_mutable = false;
+
+        /// Get the total number of elements
+        pub fn len(self: Self) usize {
+            return self.data.len;
+        }
+
+        /// Check if the buffer is empty
+        pub fn isEmpty(self: Self) bool {
+            return self.data.len == 0;
+        }
+
+        /// Check if the buffer is C-contiguous (row-major)
+        pub fn isContiguous(self: Self) bool {
+            return self._buffer.strides == null or self.ndim == 1;
+        }
+
+        /// Get element at a flat index
+        pub fn get(self: Self, index: usize) T {
+            return self.data[index];
+        }
+
+        /// Get element at 2D index (row, col) - only valid for 2D arrays
+        pub fn get2D(self: Self, row: usize, col: usize) T {
+            if (self.ndim != 2) @panic("get2D requires 2D array");
+            if (self.strides) |strides| {
+                // Use strides for non-contiguous access
+                const byte_offset = @as(usize, @intCast(strides[0])) * row + @as(usize, @intCast(strides[1])) * col;
+                const ptr: [*]const T = @ptrCast(@alignCast(self._buffer.buf.?));
+                const byte_ptr: [*]const u8 = @ptrCast(ptr);
+                return @as(*const T, @ptrCast(@alignCast(byte_ptr + byte_offset))).*;
+            } else {
+                // C-contiguous
+                const num_cols: usize = @intCast(self.shape[1]);
+                return self.data[row * num_cols + col];
+            }
+        }
+
+        /// Get the shape as a slice of usizes (convenience method)
+        pub fn getShape(self: Self) []const py.Py_ssize_t {
+            return self.shape;
+        }
+
+        /// Get number of rows (for 2D arrays)
+        pub fn rows(self: Self) usize {
+            if (self.ndim < 1) return 0;
+            return @intCast(self.shape[0]);
+        }
+
+        /// Get number of columns (for 2D arrays)
+        pub fn cols(self: Self) usize {
+            if (self.ndim < 2) return self.len();
+            return @intCast(self.shape[1]);
+        }
+
+        /// Iterate over elements (flat iteration)
+        pub fn iterator(self: Self) Iterator {
+            return .{ .data = self.data, .index = 0 };
+        }
+
+        pub const Iterator = struct {
+            data: []const T,
+            index: usize,
+
+            pub fn next(self: *Iterator) ?T {
+                if (self.index >= self.data.len) return null;
+                const val = self.data[self.index];
+                self.index += 1;
+                return val;
+            }
+
+            pub fn reset(self: *Iterator) void {
+                self.index = 0;
+            }
+        };
+
+        /// Release the buffer - called automatically by the wrapper
+        pub fn release(self: *Self) void {
+            py.PyBuffer_Release(&self._buffer);
+        }
+    };
+}
+
+/// Mutable zero-copy view into a Python buffer (numpy array, bytearray, etc.)
+/// Use this when you need to modify the array data in-place.
+///
+/// Example:
+/// ```zig
+/// fn scale_array(arr: pyoz.BufferViewMut(f64), factor: f64) void {
+///     for (arr.data) |*v| v.* *= factor;
+/// }
+/// ```
+///
+/// Python usage:
+/// ```python
+/// import numpy as np
+/// arr = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+/// mymodule.scale_array(arr, 2.0)  # Modifies arr in-place!
+/// print(arr)  # [2.0, 4.0, 6.0]
+/// ```
+pub fn BufferViewMut(comptime T: type) type {
+    return struct {
+        /// The underlying data as a mutable Zig slice
+        data: []T,
+        /// Number of dimensions
+        ndim: usize,
+        /// Shape of each dimension
+        shape: []const py.Py_ssize_t,
+        /// Strides for each dimension (in bytes)
+        strides: ?[]const py.Py_ssize_t,
+        /// The Python object (for reference counting)
+        _py_obj: *PyObject,
+        /// The buffer view (must be released)
+        _buffer: py.Py_buffer,
+
+        const Self = @This();
+        pub const ElementType = T;
+        pub const is_buffer_view = true;
+        pub const is_mutable = true;
+
+        /// Get the total number of elements
+        pub fn len(self: Self) usize {
+            return self.data.len;
+        }
+
+        /// Check if the buffer is empty
+        pub fn isEmpty(self: Self) bool {
+            return self.data.len == 0;
+        }
+
+        /// Check if the buffer is C-contiguous
+        pub fn isContiguous(self: Self) bool {
+            return self._buffer.strides == null or self.ndim == 1;
+        }
+
+        /// Get element at a flat index
+        pub fn get(self: Self, index: usize) T {
+            return self.data[index];
+        }
+
+        /// Set element at a flat index
+        pub fn set(self: Self, index: usize, value: T) void {
+            self.data[index] = value;
+        }
+
+        /// Get element at 2D index (row, col)
+        pub fn get2D(self: Self, row: usize, col: usize) T {
+            if (self.ndim != 2) @panic("get2D requires 2D array");
+            if (self.strides) |strides| {
+                const byte_offset = @as(usize, @intCast(strides[0])) * row + @as(usize, @intCast(strides[1])) * col;
+                const ptr: [*]T = @ptrCast(@alignCast(self._buffer.buf.?));
+                const byte_ptr: [*]u8 = @ptrCast(ptr);
+                return @as(*T, @ptrCast(@alignCast(byte_ptr + byte_offset))).*;
+            } else {
+                const cols_count: usize = @intCast(self.shape[1]);
+                return self.data[row * cols_count + col];
+            }
+        }
+
+        /// Set element at 2D index (row, col)
+        pub fn set2D(self: Self, row: usize, col: usize, value: T) void {
+            if (self.ndim != 2) @panic("set2D requires 2D array");
+            if (self.strides) |strides| {
+                const byte_offset = @as(usize, @intCast(strides[0])) * row + @as(usize, @intCast(strides[1])) * col;
+                const ptr: [*]T = @ptrCast(@alignCast(self._buffer.buf.?));
+                const byte_ptr: [*]u8 = @ptrCast(ptr);
+                @as(*T, @ptrCast(@alignCast(byte_ptr + byte_offset))).* = value;
+            } else {
+                const cols_count: usize = @intCast(self.shape[1]);
+                self.data[row * cols_count + col] = value;
+            }
+        }
+
+        /// Get the shape
+        pub fn getShape(self: Self) []const py.Py_ssize_t {
+            return self.shape;
+        }
+
+        /// Get number of rows (for 2D arrays)
+        pub fn rows(self: Self) usize {
+            if (self.ndim < 1) return 0;
+            return @intCast(self.shape[0]);
+        }
+
+        /// Get number of columns (for 2D arrays)
+        pub fn cols(self: Self) usize {
+            if (self.ndim < 2) return self.len();
+            return @intCast(self.shape[1]);
+        }
+
+        /// Fill the entire buffer with a value
+        pub fn fill(self: Self, value: T) void {
+            for (self.data) |*elem| {
+                elem.* = value;
+            }
+        }
+
+        /// Release the buffer - called automatically by the wrapper
+        pub fn release(self: *Self) void {
+            py.PyBuffer_Release(&self._buffer);
+        }
+    };
+}
+
+/// Get the expected buffer format character for a Zig type
+fn getBufferFormat(comptime T: type) []const u8 {
+    return switch (T) {
+        f64 => "d",
+        f32 => "f",
+        i64 => "q",
+        u64 => "Q",
+        i32 => "i",
+        u32 => "I",
+        i16 => "h",
+        u16 => "H",
+        i8 => "b",
+        u8 => "B",
+        Complex => "Zd", // complex128 (two f64)
+        Complex32 => "Zf", // complex64 (two f32)
+        else => @compileError("Unsupported buffer element type: " ++ @typeName(T)),
+    };
+}
+
+/// Check if a buffer format matches the expected type
+fn checkBufferFormat(comptime T: type, format: ?[*:0]const u8) bool {
+    if (format) |fmt| {
+        const fmt_slice = std.mem.sliceTo(fmt, 0);
+        if (fmt_slice.len == 0) return false;
+
+        // Handle platform-specific and complex format codes
+        return switch (T) {
+            // Platform-specific: numpy uses 'l' for int64 on some platforms instead of 'q'
+            i64 => fmt_slice.len >= 1 and (fmt_slice[fmt_slice.len - 1] == 'q' or fmt_slice[fmt_slice.len - 1] == 'l'),
+            u64 => fmt_slice.len >= 1 and (fmt_slice[fmt_slice.len - 1] == 'Q' or fmt_slice[fmt_slice.len - 1] == 'L'),
+            // Complex types: format is "Zd" (complex128) or "Zf" (complex64)
+            Complex => std.mem.eql(u8, fmt_slice, "Zd"),
+            Complex32 => std.mem.eql(u8, fmt_slice, "Zf"),
+            else => {
+                const expected = getBufferFormat(T);
+                return fmt_slice.len >= 1 and fmt_slice[fmt_slice.len - 1] == expected[0];
+            },
+        };
+    }
+    return false;
+}
+
+// ============================================================================
 // GIL (Global Interpreter Lock) Control
 // ============================================================================
 
@@ -1322,6 +1676,82 @@ pub fn Converter(comptime class_types: []const type) type {
                 return T{ .py_set = obj };
             }
 
+            // Check if T is a BufferView or BufferViewMut type
+            if (info == .@"struct" and @hasDecl(T, "is_buffer_view") and T.is_buffer_view) {
+                const ElementType = T.ElementType;
+                const is_mutable = T.is_mutable;
+
+                // Check if object supports buffer protocol
+                if (!py.PyObject_CheckBuffer(obj)) {
+                    py.PyErr_SetString(py.PyExc_TypeError(), "Object does not support buffer protocol");
+                    return error.TypeError;
+                }
+
+                var buffer: py.Py_buffer = std.mem.zeroes(py.Py_buffer);
+                // Request any contiguous buffer (C or Fortran order) - non-contiguous arrays will fail
+                // This is important because our BufferView assumes contiguous memory layout
+                // Both C-order and Fortran-order are contiguous in memory, just with different dimension ordering
+                const flags: c_int = if (is_mutable)
+                    py.PyBUF_WRITABLE | py.PyBUF_FORMAT | py.PyBUF_ND | py.PyBUF_STRIDES | py.PyBUF_ANY_CONTIGUOUS
+                else
+                    py.PyBUF_FORMAT | py.PyBUF_ND | py.PyBUF_STRIDES | py.PyBUF_ANY_CONTIGUOUS;
+
+                if (py.PyObject_GetBuffer(obj, &buffer, flags) < 0) {
+                    // Error already set by Python
+                    return error.TypeError;
+                }
+
+                // Validate the format matches the expected element type
+                if (buffer.format) |fmt| {
+                    if (!checkBufferFormat(ElementType, fmt)) {
+                        py.PyBuffer_Release(&buffer);
+                        py.PyErr_SetString(py.PyExc_TypeError(), "Buffer format does not match expected type");
+                        return error.TypeError;
+                    }
+                }
+
+                // Validate item size
+                if (buffer.itemsize != @sizeOf(ElementType)) {
+                    py.PyBuffer_Release(&buffer);
+                    py.PyErr_SetString(py.PyExc_TypeError(), "Buffer item size mismatch");
+                    return error.TypeError;
+                }
+
+                // Calculate total number of elements
+                var num_elements: usize = 1;
+                const ndim: usize = @intCast(buffer.ndim);
+                if (buffer.shape) |shape| {
+                    for (0..ndim) |i| {
+                        num_elements *= @intCast(shape[i]);
+                    }
+                } else {
+                    num_elements = @intCast(@divExact(buffer.len, buffer.itemsize));
+                }
+
+                // Create the slice from the buffer
+                const ptr: [*]ElementType = @ptrCast(@alignCast(buffer.buf.?));
+
+                if (is_mutable) {
+                    return T{
+                        .data = ptr[0..num_elements],
+                        .ndim = ndim,
+                        .shape = if (buffer.shape) |s| s[0..ndim] else &[_]py.Py_ssize_t{@intCast(num_elements)},
+                        .strides = if (buffer.strides) |s| s[0..ndim] else null,
+                        ._py_obj = obj,
+                        ._buffer = buffer,
+                    };
+                } else {
+                    return T{
+                        .data = ptr[0..num_elements],
+                        .ndim = ndim,
+                        .shape = if (buffer.shape) |s| s[0..ndim] else &[_]py.Py_ssize_t{@intCast(num_elements)},
+                        .strides = if (buffer.strides) |s| s[0..ndim] else null,
+                        ._py_obj = obj,
+                        ._buffer = buffer,
+                    };
+                }
+            }
+
             return switch (info) {
                 .int => |int_info| {
                     if (!py.PyLong_Check(obj)) {
@@ -1408,10 +1838,12 @@ pub fn wrapFunctionWithClasses(comptime zig_func: anytype, comptime class_types:
         fn wrapper(self: ?*PyObject, args: ?*PyObject) callconv(.c) ?*PyObject {
             _ = self;
 
-            const zig_args = parseArgs(params, args) catch |err| {
+            var zig_args = parseArgs(params, args) catch |err| {
                 setError(err);
                 return null;
             };
+            // Ensure BufferView arguments are released after the function call
+            defer releaseBufferViews(&zig_args);
 
             const result = @call(.auto, zig_func, zig_args);
             return handleReturn(ReturnType, result);
@@ -1437,6 +1869,16 @@ pub fn wrapFunctionWithClasses(comptime zig_func: anytype, comptime class_types:
             }
 
             return result;
+        }
+
+        fn releaseBufferViews(zig_args: *ArgsTuple(params)) void {
+            inline for (0..params.len) |i| {
+                const ParamType = params[i].type.?;
+                const param_info = @typeInfo(ParamType);
+                if (param_info == .@"struct" and @hasDecl(ParamType, "is_buffer_view") and ParamType.is_buffer_view) {
+                    zig_args[i].release();
+                }
+            }
         }
 
         fn handleReturn(comptime RT: type, result: anytype) ?*PyObject {
@@ -1638,13 +2080,25 @@ pub fn wrapFunctionWithKeywords(comptime zig_func: anytype, comptime class_types
         fn wrapper(self: ?*PyObject, args: ?*PyObject, kwargs: ?*PyObject) callconv(.c) ?*PyObject {
             _ = self;
 
-            const zig_args = parseArgsWithKwargs(args, kwargs) catch |err| {
+            var zig_args = parseArgsWithKwargs(args, kwargs) catch |err| {
                 setError(err);
                 return null;
             };
+            // Ensure BufferView arguments are released after the function call
+            defer releaseBufferViews(&zig_args);
 
             const result = @call(.auto, zig_func, zig_args);
             return handleReturn(ReturnType, result);
+        }
+
+        fn releaseBufferViews(zig_args: *ArgsTuple(params)) void {
+            inline for (0..params.len) |i| {
+                const ParamType = params[i].type.?;
+                const param_info = @typeInfo(ParamType);
+                if (param_info == .@"struct" and @hasDecl(ParamType, "is_buffer_view") and ParamType.is_buffer_view) {
+                    zig_args[i].release();
+                }
+            }
         }
 
         fn parseArgsWithKwargs(args: ?*PyObject, kwargs: ?*PyObject) !ArgsTuple(params) {
@@ -2168,10 +2622,12 @@ pub fn wrapFunctionWithErrorMapping(comptime zig_func: anytype, comptime class_t
         fn wrapper(self: ?*PyObject, args: ?*PyObject) callconv(.c) ?*PyObject {
             _ = self;
 
-            const zig_args = parseArgs(params, args) catch |err| {
+            var zig_args = parseArgs(params, args) catch |err| {
                 setMappedError(err);
                 return null;
             };
+            // Ensure BufferView arguments are released after the function call
+            defer releaseBufferViews(&zig_args);
 
             const result = @call(.auto, zig_func, zig_args);
             return handleReturn(ReturnType, result);
@@ -2197,6 +2653,16 @@ pub fn wrapFunctionWithErrorMapping(comptime zig_func: anytype, comptime class_t
             }
 
             return result;
+        }
+
+        fn releaseBufferViews(zig_args: *ArgsTuple(params)) void {
+            inline for (0..params.len) |i| {
+                const ParamType = params[i].type.?;
+                const param_info = @typeInfo(ParamType);
+                if (param_info == .@"struct" and @hasDecl(ParamType, "is_buffer_view") and ParamType.is_buffer_view) {
+                    zig_args[i].release();
+                }
+            }
         }
 
         fn handleReturn(comptime RT: type, result: anytype) ?*PyObject {

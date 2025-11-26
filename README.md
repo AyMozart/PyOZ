@@ -118,6 +118,183 @@ PyOZ automatically converts between Python and Zig types:
 | `datetime` | `pyoz.DateTime`, `pyoz.Date`, `pyoz.Time`, `pyoz.TimeDelta` |
 | `Decimal` | `pyoz.Decimal` |
 | `pathlib.Path` | `pyoz.Path` |
+| `numpy.ndarray` | `pyoz.BufferView(T)`, `pyoz.BufferViewMut(T)` |
+
+## NumPy Arrays (Zero-Copy)
+
+PyOZ provides zero-copy access to numpy arrays via the Python buffer protocol. This lets you pass numpy arrays directly to Zig functions without copying data.
+
+### Basic Usage
+
+```zig
+const pyoz = @import("PyOZ");
+
+// Read-only access to numpy array
+fn sum_array(arr: pyoz.BufferView(f64)) f64 {
+    var total: f64 = 0;
+    for (arr.data) |v| {
+        total += v;
+    }
+    return total;
+}
+
+// Mutable (in-place) access
+fn scale_array(arr: pyoz.BufferViewMut(f64), factor: f64) void {
+    for (arr.data) |*v| {
+        v.* *= factor;
+    }
+}
+
+const MyModule = pyoz.module(.{
+    .name = "mymodule",
+    .funcs = &.{
+        pyoz.func("sum_array", sum_array, "Sum array elements"),
+        pyoz.func("scale_array", scale_array, "Scale array in-place"),
+    },
+});
+```
+
+Python usage:
+
+```python
+import numpy as np
+import mymodule
+
+arr = np.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=np.float64)
+print(mymodule.sum_array(arr))  # 15.0
+
+mymodule.scale_array(arr, 2.0)
+print(arr)  # [2. 4. 6. 8. 10.] - modified in-place!
+```
+
+### Supported Element Types
+
+| NumPy dtype | Zig type |
+|-------------|----------|
+| `float64` | `f64` |
+| `float32` | `f32` |
+| `int64` | `i64` |
+| `int32` | `i32` |
+| `int16` | `i16` |
+| `int8` | `i8` |
+| `uint64` | `u64` |
+| `uint32` | `u32` |
+| `uint16` | `u16` |
+| `uint8` | `u8` |
+| `complex128` | `pyoz.Complex` |
+| `complex64` | `pyoz.Complex32` |
+
+### BufferView API
+
+```zig
+// Read-only view
+const view: pyoz.BufferView(f64) = ...;
+view.data          // []const f64 - direct slice access
+view.len()         // number of elements
+view.ndim          // number of dimensions
+view.shape         // array shape
+view.rows()        // rows (for 2D arrays)
+view.cols()        // columns (for 2D arrays)
+view.get(i)        // get element at index
+view.get2D(r, c)   // get element at row, col
+view.isEmpty()     // true if empty
+view.isContiguous()// true if C or F contiguous
+
+// Mutable view (same API plus):
+const mut_view: pyoz.BufferViewMut(f64) = ...;
+mut_view.data      // []f64 - mutable slice
+mut_view.set(i, v) // set element at index
+mut_view.set2D(r, c, v) // set element at row, col
+mut_view.fill(v)   // fill with value
+```
+
+### Complex Numbers
+
+```zig
+fn process_complex(arr: pyoz.BufferView(pyoz.Complex)) pyoz.Complex {
+    var sum = pyoz.Complex.init(0, 0);
+    for (arr.data) |c| {
+        sum = sum.add(c);
+    }
+    return sum;
+}
+
+fn conjugate_inplace(arr: pyoz.BufferViewMut(pyoz.Complex)) void {
+    for (arr.data) |*c| {
+        c.* = c.conjugate();
+    }
+}
+```
+
+```python
+arr = np.array([1+2j, 3+4j], dtype=np.complex128)
+result = mymodule.process_complex(arr)  # (4+6j)
+
+mymodule.conjugate_inplace(arr)
+print(arr)  # [1.-2.j 3.-4.j]
+```
+
+### Raising Exceptions
+
+Use optional return types with `PyErr_SetString` to raise Python exceptions:
+
+```zig
+/// Returns ?T (optional) to allow raising exceptions:
+///   - return value  -> Python receives the value
+///   - return null   -> Check PyErr_Occurred(), raise if set, else return None
+fn safe_dot(a: pyoz.BufferView(f64), b: pyoz.BufferView(f64)) ?f64 {
+    if (a.len() != b.len()) {
+        pyoz.py.PyErr_SetString(pyoz.py.PyExc_ValueError(), "Arrays must have same length");
+        return null;  // This triggers the exception
+    }
+    var result: f64 = 0;
+    for (a.data, b.data) |x, y| {
+        result += x * y;
+    }
+    return result;
+}
+```
+
+### What's Supported
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| C-contiguous arrays | ✅ | Default numpy layout |
+| Fortran-contiguous arrays | ✅ | Column-major order |
+| 1D arrays | ✅ | Full support |
+| 2D arrays | ✅ | With `rows()`, `cols()`, `get2D()` |
+| Complex numbers | ✅ | `complex64` and `complex128` |
+| Read-only access | ✅ | `BufferView(T)` |
+| Mutable access | ✅ | `BufferViewMut(T)` |
+| Zero-copy | ✅ | No data copying |
+
+### What's NOT Supported (and Why)
+
+| Feature | Reason |
+|---------|--------|
+| Non-contiguous arrays (e.g., `arr[::2]`) | **Medium effort, low value.** Would require stride-based iteration instead of direct slice access, slowing down all operations. Workaround: use `.copy()` to make contiguous. |
+| Structured dtypes | **Hard to implement, low value.** Would require parsing format strings and dynamic field access. Workaround: access fields in Python, pass simple arrays to Zig. |
+| String arrays | **Complex memory layout.** NumPy strings have fixed-width or object dtype. Workaround: convert to list of strings in Python. |
+
+### Performance Tips
+
+1. **Use contiguous arrays**: If you get a "buffer is not contiguous" error, call `.copy()` on sliced arrays
+2. **Prefer `BufferView` over `BufferViewMut`**: Read-only when possible
+3. **Release GIL for heavy computation**: Combine with `pyoz.releaseGIL()` for parallel Python threads
+
+```zig
+fn heavy_numpy_work(arr: pyoz.BufferView(f64)) f64 {
+    const gil = pyoz.releaseGIL();
+    defer gil.acquire();
+    
+    // CPU-intensive work without GIL
+    var sum: f64 = 0;
+    for (arr.data) |v| {
+        sum += @sin(v) * @cos(v);
+    }
+    return sum;
+}
+```
 
 ## Classes
 
@@ -394,6 +571,90 @@ If the tag doesn't match `version.zig`, the push will be blocked.
 | Async/await | ❌ | ✅ |
 | abi3 (stable ABI) | ❌ | ✅ |
 | Maturity | New | Battle-tested |
+
+## Comparison with Ziggy-Pydust
+
+[Ziggy-Pydust](https://github.com/spiraldb/ziggy-pydust) is another Zig-to-Python binding library. Here's a fair comparison based on code analysis of both projects:
+
+### API Philosophy
+
+**PyOZ** - Write natural Zig:
+```zig
+fn add(a: i64, b: i64) i64 {
+    return a + b;
+}
+```
+
+**Pydust** - Struct-wrapped arguments:
+```zig
+pub fn add(args: struct { a: i64, b: i64 }) i64 {
+    return args.a + args.b;
+}
+```
+
+### Class Definitions
+
+**PyOZ** - Structs remain portable Zig:
+```zig
+const Point = struct {
+    x: f64,
+    y: f64,
+    pub fn magnitude(self: *const Point) f64 { ... }
+};
+// Register with: pyoz.class("Point", Point)
+```
+
+**Pydust** - Wrapper pattern:
+```zig
+pub const Point = py.class(struct {
+    x: f64,
+    y: f64,
+    pub fn magnitude(self: *const @This()) f64 { ... }
+});
+```
+
+### Feature Comparison
+
+| Feature | PyOZ | Pydust |
+|---------|------|--------|
+| **Zig version** | 0.15.x | 0.14.0 |
+| **Python version** | 3.8+ | 3.11+ |
+| **Stable ABI (abi3)** | ❌ | ✅ |
+| **Build system** | Standalone CLI | Poetry integration |
+| **Function syntax** | Natural Zig | Struct-wrapped args |
+| **`*args/**kwargs`** | ✅ | ✅ (native to struct pattern) |
+| **NumPy BufferView** | ✅ First-class | ✅ Lower-level |
+| **Complex numbers** | ✅ Built-in types | Manual |
+| **DateTime types** | ✅ Built-in | Manual |
+| **Decimal type** | ✅ Built-in | Manual |
+| **i128/u128** | ✅ | Unknown |
+| **All dunder methods** | ✅ | ✅ |
+| **Reflected ops (`__radd__`)** | ✅ | Limited |
+| **Context managers** | ✅ | Unknown |
+| **Descriptors** | ✅ | Limited |
+| **GIL control** | ✅ | ✅ |
+| **GC support** | ✅ | ✅ |
+| **pytest integration** | ❌ | ✅ |
+
+### When to Choose Each
+
+| Choose **PyOZ** if... | Choose **Pydust** if... |
+|-----------------------|-------------------------|
+| You want clean, natural Zig syntax | You need stable ABI (one binary for Python 3.11+) |
+| You need Python 3.8-3.10 support | You already use Poetry |
+| You want built-in numpy/datetime/decimal support | You want pytest integration |
+| You prefer standalone CLI tooling | You prefer a more modular codebase |
+| You want the latest Zig (0.15.x) | You want an established project (SpiralDB backing) |
+
+### Codebase Comparison
+
+| Metric | PyOZ | Pydust |
+|--------|------|--------|
+| Core library LoC | ~7,600 | ~5,750 |
+| File count | 4 (monolithic) | 30+ (modular) |
+| Architecture | Straightforward | Discovery-based |
+
+**Bottom line:** PyOZ prioritizes ergonomics and "just write Zig" philosophy. Pydust prioritizes modularity and stable ABI. Both are valid approaches for different use cases.
 
 ## License
 

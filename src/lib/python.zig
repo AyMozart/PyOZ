@@ -92,6 +92,30 @@ pub inline fn PyBuffer_FillInfo(view: *Py_buffer, obj: ?*PyObject, buf: ?*anyopa
     return c.PyBuffer_FillInfo(view, obj, buf, len, readonly, flags);
 }
 
+/// Get a buffer view from an object that supports the buffer protocol (e.g., numpy arrays, bytes, memoryview)
+/// Returns 0 on success, -1 on failure
+/// Caller MUST call PyBuffer_Release when done with the buffer
+pub inline fn PyObject_GetBuffer(obj: *PyObject, view: *Py_buffer, flags: c_int) c_int {
+    return c.PyObject_GetBuffer(obj, view, flags);
+}
+
+/// Release a buffer obtained via PyObject_GetBuffer
+pub inline fn PyBuffer_Release(view: *Py_buffer) void {
+    c.PyBuffer_Release(view);
+}
+
+/// Check if an object supports the buffer protocol
+pub inline fn PyObject_CheckBuffer(obj: *PyObject) bool {
+    return c.PyObject_CheckBuffer(obj) != 0;
+}
+
+/// Additional buffer flags for numpy compatibility
+pub const PyBUF_C_CONTIGUOUS: c_int = c.PyBUF_C_CONTIGUOUS;
+pub const PyBUF_F_CONTIGUOUS: c_int = c.PyBUF_F_CONTIGUOUS;
+pub const PyBUF_ANY_CONTIGUOUS: c_int = c.PyBUF_ANY_CONTIGUOUS;
+pub const PyBUF_FULL: c_int = c.PyBUF_FULL;
+pub const PyBUF_FULL_RO: c_int = c.PyBUF_FULL_RO;
+
 // GIL (Global Interpreter Lock) control
 // Note: We define PyThreadState as opaque and use extern declarations to avoid
 // cImport issues with Python 3.12+ where the struct contains anonymous structs

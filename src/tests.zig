@@ -44,6 +44,30 @@ fn requirePythonVersion(major: i64, minor: i64) !void {
     }
 }
 
+var numpy_available: ?bool = null;
+
+/// Check if numpy is available (cached)
+fn hasNumpy(python: *pyoz.Python) bool {
+    if (numpy_available) |available| {
+        return available;
+    }
+    // Try to import numpy
+    python.exec("import numpy as np") catch {
+        numpy_available = false;
+        return false;
+    };
+    numpy_available = true;
+    return true;
+}
+
+/// Skip test if numpy is not installed
+fn requireNumpy(python: *pyoz.Python) !void {
+    if (!hasNumpy(python)) {
+        std.debug.print("Skipping: requires numpy\n", .{});
+        return error.SkipZigTest;
+    }
+}
+
 // ============================================================================
 // BASIC FUNCTIONS
 // ============================================================================
@@ -2472,4 +2496,203 @@ test "TypedAttribute __delete__ - different bounds" {
     // Delete resets to min (10.0)
     try python.exec("attr.__delete__(obj2)");
     try std.testing.expectApproxEqAbs(@as(f64, 10.0), try python.eval(f64, "attr.__get__(obj2)"), 0.0001);
+}
+
+// ============================================================================
+// NUMPY / BUFFERVIEW TESTS
+// ============================================================================
+
+test "numpy - BufferView f64 sum" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec("arr = np.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=np.float64)");
+    const result = try python.eval(f64, "example.numpy_sum(arr)");
+    try std.testing.expectApproxEqAbs(@as(f64, 15.0), result, 0.0001);
+}
+
+test "numpy - BufferView f64 mean" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec("arr = np.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=np.float64)");
+    const result = try python.eval(f64, "example.numpy_mean(arr)");
+    try std.testing.expectApproxEqAbs(@as(f64, 3.0), result, 0.0001);
+}
+
+test "numpy - BufferView f64 minmax" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec("arr = np.array([3.0, 1.0, 4.0, 1.0, 5.0], dtype=np.float64)");
+    try python.exec("result = example.numpy_minmax(arr)");
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), try python.eval(f64, "result[0]"), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 5.0), try python.eval(f64, "result[1]"), 0.0001);
+}
+
+test "numpy - BufferView f64 dot product" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec("a = np.array([1.0, 2.0, 3.0], dtype=np.float64)");
+    try python.exec("b = np.array([4.0, 5.0, 6.0], dtype=np.float64)");
+    const result = try python.eval(f64, "example.numpy_dot(a, b)");
+    // 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
+    try std.testing.expectApproxEqAbs(@as(f64, 32.0), result, 0.0001);
+}
+
+test "numpy - BufferViewMut scale in-place" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec("arr = np.array([1.0, 2.0, 3.0], dtype=np.float64)");
+    try python.exec("example.numpy_scale(arr, 2.0)");
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), try python.eval(f64, "arr[0]"), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 4.0), try python.eval(f64, "arr[1]"), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 6.0), try python.eval(f64, "arr[2]"), 0.0001);
+}
+
+test "numpy - BufferViewMut normalize in-place" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec("arr = np.array([3.0, 4.0], dtype=np.float64)");
+    try python.exec("example.numpy_normalize(arr)");
+    // magnitude = 5, so [3/5, 4/5] = [0.6, 0.8]
+    try std.testing.expectApproxEqAbs(@as(f64, 0.6), try python.eval(f64, "arr[0]"), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.8), try python.eval(f64, "arr[1]"), 0.0001);
+}
+
+test "numpy - BufferViewMut relu in-place" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec("arr = np.array([-2.0, -1.0, 0.0, 1.0, 2.0], dtype=np.float64)");
+    try python.exec("example.numpy_relu(arr)");
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), try python.eval(f64, "arr[0]"), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), try python.eval(f64, "arr[1]"), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), try python.eval(f64, "arr[2]"), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), try python.eval(f64, "arr[3]"), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), try python.eval(f64, "arr[4]"), 0.0001);
+}
+
+test "numpy - BufferView i64 sum" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec("arr = np.array([1, 2, 3, 4, 5], dtype=np.int64)");
+    const result = try python.eval(i64, "example.numpy_sum_int(arr)");
+    try std.testing.expectEqual(@as(i64, 15), result);
+}
+
+test "numpy - BufferView 2D shape info" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec("arr = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64)");
+    try python.exec("rows, cols = example.numpy_shape_info(arr)");
+    try std.testing.expectEqual(@as(i64, 2), try python.eval(i64, "rows"));
+    try std.testing.expectEqual(@as(i64, 3), try python.eval(i64, "cols"));
+}
+
+test "numpy - BufferView variance and std" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec("arr = np.array([2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0], dtype=np.float64)");
+    // Mean = 5, variance = 4, std = 2
+    try std.testing.expectApproxEqAbs(@as(f64, 4.0), try python.eval(f64, "example.numpy_variance(arr)"), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), try python.eval(f64, "example.numpy_std(arr)"), 0.0001);
+}
+
+test "numpy - Fortran-order array support" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec("arr = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64, order='F')");
+    // Verify it's F-order
+    try std.testing.expect(!try python.eval(bool, "arr.flags['C_CONTIGUOUS']"));
+    try std.testing.expect(try python.eval(bool, "arr.flags['F_CONTIGUOUS']"));
+    // Should still work
+    const result = try python.eval(f64, "example.numpy_sum(arr)");
+    try std.testing.expectApproxEqAbs(@as(f64, 21.0), result, 0.0001);
+}
+
+test "numpy - complex128 sum" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec("arr = np.array([1+2j, 3+4j, 5+6j], dtype=np.complex128)");
+    try python.exec("result = example.numpy_complex_sum(arr)");
+    try std.testing.expectApproxEqAbs(@as(f64, 9.0), try python.eval(f64, "result.real"), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 12.0), try python.eval(f64, "result.imag"), 0.0001);
+}
+
+test "numpy - complex128 conjugate in-place" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec("arr = np.array([1+2j, 3-4j], dtype=np.complex128)");
+    try python.exec("example.numpy_complex_conjugate(arr)");
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), try python.eval(f64, "arr[0].real"), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, -2.0), try python.eval(f64, "arr[0].imag"), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.0), try python.eval(f64, "arr[1].real"), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 4.0), try python.eval(f64, "arr[1].imag"), 0.0001);
+}
+
+test "numpy - complex128 magnitudes" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec("arr = np.array([3+4j, 5+12j], dtype=np.complex128)");
+    try python.exec("out = np.zeros(2, dtype=np.float64)");
+    try python.exec("example.numpy_complex_magnitudes(arr, out)");
+    try std.testing.expectApproxEqAbs(@as(f64, 5.0), try python.eval(f64, "out[0]"), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 13.0), try python.eval(f64, "out[1]"), 0.0001);
+}
+
+test "numpy - complex64 sum" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec("arr = np.array([1+2j, 3+4j], dtype=np.complex64)");
+    try python.exec("result = example.numpy_complex64_sum(arr)");
+    try std.testing.expectApproxEqAbs(@as(f64, 4.0), try python.eval(f64, "result.real"), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 6.0), try python.eval(f64, "result.imag"), 0.001);
+}
+
+test "numpy - empty array handling" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec("arr = np.array([], dtype=np.float64)");
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), try python.eval(f64, "example.numpy_sum(arr)"), 0.0001);
+    try std.testing.expect(try python.eval(bool, "example.numpy_mean(arr) is None"));
+    try std.testing.expect(try python.eval(bool, "example.numpy_minmax(arr) is None"));
+}
+
+test "numpy - wrong dtype raises TypeError" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec(
+        \\try:
+        \\    example.numpy_sum(np.array([1, 2, 3], dtype=np.int32))
+        \\    wrong_dtype_raised = False
+        \\except (TypeError, RuntimeError):
+        \\    wrong_dtype_raised = True
+    );
+    try std.testing.expect(try python.eval(bool, "wrong_dtype_raised"));
+}
+
+test "numpy - non-contiguous array rejected" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec("arr = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float64)[::2]");
+    // Verify it's non-contiguous
+    try std.testing.expect(!try python.eval(bool, "arr.flags['C_CONTIGUOUS']"));
+    try python.exec(
+        \\try:
+        \\    example.numpy_sum(arr)
+        \\    non_contig_raised = False
+        \\except (TypeError, RuntimeError, BufferError):
+        \\    non_contig_raised = True
+    );
+    try std.testing.expect(try python.eval(bool, "non_contig_raised"));
+}
+
+test "numpy - mismatched lengths raises ValueError" {
+    const python = try initTestPython();
+    try requireNumpy(python);
+    try python.exec(
+        \\try:
+        \\    example.numpy_dot(np.array([1.0, 2.0, 3.0]), np.array([1.0, 2.0]))
+        \\    mismatch_raised = False
+        \\except ValueError:
+        \\    mismatch_raised = True
+    );
+    try std.testing.expect(try python.eval(bool, "mismatch_raised"));
 }

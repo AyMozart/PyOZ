@@ -2030,6 +2030,249 @@ const DefaultDict = struct {
 };
 
 // ============================================================================
+// Numpy / BufferView examples - Zero-copy array operations
+// ============================================================================
+
+/// Sum all elements in a numpy array (zero-copy, read-only)
+fn numpy_sum(arr: pyoz.BufferView(f64)) f64 {
+    var total: f64 = 0;
+    for (arr.data) |v| {
+        total += v;
+    }
+    return total;
+}
+
+/// Calculate mean of a numpy array
+fn numpy_mean(arr: pyoz.BufferView(f64)) ?f64 {
+    if (arr.len() == 0) return null;
+    var total: f64 = 0;
+    for (arr.data) |v| {
+        total += v;
+    }
+    return total / @as(f64, @floatFromInt(arr.len()));
+}
+
+/// Find min and max of a numpy array, returns (min, max) tuple
+fn numpy_minmax(arr: pyoz.BufferView(f64)) ?struct { f64, f64 } {
+    if (arr.len() == 0) return null;
+    var min_val = arr.data[0];
+    var max_val = arr.data[0];
+    for (arr.data) |v| {
+        if (v < min_val) min_val = v;
+        if (v > max_val) max_val = v;
+    }
+    return .{ min_val, max_val };
+}
+
+/// Compute dot product of two numpy arrays
+fn numpy_dot(a: pyoz.BufferView(f64), b: pyoz.BufferView(f64)) ?f64 {
+    if (a.len() != b.len()) {
+        pyoz.py.PyErr_SetString(pyoz.py.PyExc_ValueError(), "Arrays must have same length");
+        return null;
+    }
+    var result: f64 = 0;
+    for (a.data, b.data) |x, y| {
+        result += x * y;
+    }
+    return result;
+}
+
+/// Scale all elements in a numpy array in-place (zero-copy, mutable)
+fn numpy_scale(arr: pyoz.BufferViewMut(f64), factor: f64) void {
+    for (arr.data) |*v| {
+        v.* *= factor;
+    }
+}
+
+/// Add a scalar to all elements in-place
+fn numpy_add_scalar(arr: pyoz.BufferViewMut(f64), scalar: f64) void {
+    for (arr.data) |*v| {
+        v.* += scalar;
+    }
+}
+
+/// Fill array with a value in-place
+fn numpy_fill(arr: pyoz.BufferViewMut(f64), value: f64) void {
+    arr.fill(value);
+}
+
+/// Normalize array in-place (divide by max absolute value)
+fn numpy_normalize(arr: pyoz.BufferViewMut(f64)) void {
+    // Calculate Euclidean norm (magnitude)
+    var sum_sq: f64 = 0;
+    for (arr.data) |v| {
+        sum_sq += v * v;
+    }
+    const magnitude = @sqrt(sum_sq);
+    if (magnitude > 0) {
+        for (arr.data) |*v| {
+            v.* /= magnitude;
+        }
+    }
+}
+
+/// Element-wise multiply two arrays, storing result in first array.
+/// Returns ?bool (optional bool) to allow raising exceptions:
+///   - return true  -> Python True (success)
+///   - return false -> Python False (failure without exception)
+///   - return null  -> Check PyErr_Occurred(), raise exception if set, else Python None
+fn numpy_multiply_inplace(a: pyoz.BufferViewMut(f64), b: pyoz.BufferView(f64)) ?bool {
+    if (a.len() != b.len()) {
+        // Set exception and return null to raise it
+        pyoz.py.PyErr_SetString(pyoz.py.PyExc_ValueError(), "Arrays must have same length");
+        return null;
+    }
+    for (a.data, b.data) |*x, y| {
+        x.* *= y;
+    }
+    return true;
+}
+
+/// Sum integers in an int64 numpy array
+fn numpy_sum_int(arr: pyoz.BufferView(i64)) i64 {
+    var total: i64 = 0;
+    for (arr.data) |v| {
+        total +%= v; // Use wrapping add to avoid overflow
+    }
+    return total;
+}
+
+/// Get array shape info as (rows, cols) for 2D arrays
+fn numpy_shape_info(arr: pyoz.BufferView(f64)) struct { usize, usize } {
+    return .{ arr.rows(), arr.cols() };
+}
+
+/// Apply ReLU (max(0, x)) in-place - common neural network operation
+fn numpy_relu(arr: pyoz.BufferViewMut(f64)) void {
+    for (arr.data) |*v| {
+        if (v.* < 0) v.* = 0;
+    }
+}
+
+/// Apply softmax normalization in-place (for 1D arrays)
+fn numpy_softmax(arr: pyoz.BufferViewMut(f64)) void {
+    // Find max for numerical stability
+    var max_val: f64 = arr.data[0];
+    for (arr.data) |v| {
+        if (v > max_val) max_val = v;
+    }
+
+    // Compute exp(x - max) and sum
+    var sum: f64 = 0;
+    for (arr.data) |*v| {
+        v.* = @exp(v.* - max_val);
+        sum += v.*;
+    }
+
+    // Normalize
+    for (arr.data) |*v| {
+        v.* /= sum;
+    }
+}
+
+/// Compute variance of array
+fn numpy_variance(arr: pyoz.BufferView(f64)) ?f64 {
+    const n = arr.len();
+    if (n == 0) return null;
+
+    // Calculate mean
+    var sum: f64 = 0;
+    for (arr.data) |v| sum += v;
+    const mean = sum / @as(f64, @floatFromInt(n));
+
+    // Calculate variance
+    var variance: f64 = 0;
+    for (arr.data) |v| {
+        const diff = v - mean;
+        variance += diff * diff;
+    }
+    return variance / @as(f64, @floatFromInt(n));
+}
+
+/// Compute standard deviation
+fn numpy_std(arr: pyoz.BufferView(f64)) ?f64 {
+    if (numpy_variance(arr)) |variance| {
+        return @sqrt(variance);
+    }
+    return null;
+}
+
+/// Clamp all values to [min_val, max_val] in-place
+fn numpy_clamp(arr: pyoz.BufferViewMut(f64), min_val: f64, max_val: f64) void {
+    for (arr.data) |*v| {
+        if (v.* < min_val) v.* = min_val;
+        if (v.* > max_val) v.* = max_val;
+    }
+}
+
+// ============================================================================
+// Complex Number Array Functions (numpy complex128)
+// ============================================================================
+
+/// Sum complex128 array elements
+fn numpy_complex_sum(arr: pyoz.BufferView(pyoz.Complex)) pyoz.Complex {
+    var result = pyoz.Complex.init(0, 0);
+    for (arr.data) |v| {
+        result = result.add(v);
+    }
+    return result;
+}
+
+/// Calculate magnitudes of complex array, store in output array
+fn numpy_complex_magnitudes(arr: pyoz.BufferView(pyoz.Complex), out: pyoz.BufferViewMut(f64)) ?bool {
+    if (arr.len() != out.len()) {
+        pyoz.py.PyErr_SetString(pyoz.py.PyExc_ValueError(), "Arrays must have same length");
+        return null;
+    }
+    for (arr.data, out.data) |c, *m| {
+        m.* = c.magnitude();
+    }
+    return true;
+}
+
+/// Conjugate all elements in-place
+fn numpy_complex_conjugate(arr: pyoz.BufferViewMut(pyoz.Complex)) void {
+    for (arr.data) |*v| {
+        v.* = v.conjugate();
+    }
+}
+
+/// Scale complex array by a real factor in-place
+fn numpy_complex_scale(arr: pyoz.BufferViewMut(pyoz.Complex), factor: f64) void {
+    for (arr.data) |*v| {
+        v.real *= factor;
+        v.imag *= factor;
+    }
+}
+
+/// Dot product of two complex arrays (with conjugate of first)
+fn numpy_complex_dot(a: pyoz.BufferView(pyoz.Complex), b: pyoz.BufferView(pyoz.Complex)) ?pyoz.Complex {
+    if (a.len() != b.len()) {
+        pyoz.py.PyErr_SetString(pyoz.py.PyExc_ValueError(), "Arrays must have same length");
+        return null;
+    }
+    var result = pyoz.Complex.init(0, 0);
+    for (a.data, b.data) |x, y| {
+        // Hermitian dot product: sum of conj(a[i]) * b[i]
+        result = result.add(x.conjugate().mul(y));
+    }
+    return result;
+}
+
+// ============================================================================
+// Complex32 Array Functions (numpy complex64)
+// ============================================================================
+
+/// Sum complex64 array elements
+fn numpy_complex64_sum(arr: pyoz.BufferView(pyoz.Complex32)) pyoz.Complex {
+    var result = pyoz.Complex32.init(0, 0);
+    for (arr.data) |v| {
+        result = result.add(v);
+    }
+    return result.toComplex();
+}
+
+// ============================================================================
 // Module Definition
 // ============================================================================
 
@@ -2118,6 +2361,30 @@ const Example = pyoz.module(.{
         pyoz.func("get_fibonacci_ratios", get_fibonacci_ratios, "Get fibonacci ratios as list"),
         pyoz.func("sum_triple", sum_triple, "Sum a list of exactly 3 integers"),
         pyoz.func("dot_product_3d", dot_product_3d, "Dot product of two 3D vectors"),
+        // Numpy / BufferView functions (zero-copy array operations)
+        pyoz.func("numpy_sum", numpy_sum, "Sum all elements in a numpy array (zero-copy)"),
+        pyoz.func("numpy_mean", numpy_mean, "Calculate mean of a numpy array"),
+        pyoz.func("numpy_minmax", numpy_minmax, "Find min and max of a numpy array"),
+        pyoz.func("numpy_dot", numpy_dot, "Compute dot product of two numpy arrays"),
+        pyoz.func("numpy_scale", numpy_scale, "Scale all elements in-place (mutable)"),
+        pyoz.func("numpy_add_scalar", numpy_add_scalar, "Add a scalar to all elements in-place"),
+        pyoz.func("numpy_fill", numpy_fill, "Fill array with a value in-place"),
+        pyoz.func("numpy_normalize", numpy_normalize, "Normalize array in-place"),
+        pyoz.func("numpy_multiply_inplace", numpy_multiply_inplace, "Element-wise multiply two arrays in-place"),
+        pyoz.func("numpy_sum_int", numpy_sum_int, "Sum integers in an int64 numpy array"),
+        pyoz.func("numpy_shape_info", numpy_shape_info, "Get array shape info as tuple"),
+        pyoz.func("numpy_relu", numpy_relu, "Apply ReLU (max(0, x)) in-place"),
+        pyoz.func("numpy_softmax", numpy_softmax, "Apply softmax normalization in-place"),
+        pyoz.func("numpy_variance", numpy_variance, "Compute variance of array"),
+        pyoz.func("numpy_std", numpy_std, "Compute standard deviation"),
+        pyoz.func("numpy_clamp", numpy_clamp, "Clamp all values to [min, max] in-place"),
+        // Complex number array functions
+        pyoz.func("numpy_complex_sum", numpy_complex_sum, "Sum complex128 array elements"),
+        pyoz.func("numpy_complex_magnitudes", numpy_complex_magnitudes, "Calculate magnitudes of complex array"),
+        pyoz.func("numpy_complex_conjugate", numpy_complex_conjugate, "Conjugate all elements in-place"),
+        pyoz.func("numpy_complex_scale", numpy_complex_scale, "Scale complex array by real factor"),
+        pyoz.func("numpy_complex_dot", numpy_complex_dot, "Hermitian dot product of two complex arrays"),
+        pyoz.func("numpy_complex64_sum", numpy_complex64_sum, "Sum complex64 array elements"),
     },
     .classes = &.{
         pyoz.class("Point", Point),
