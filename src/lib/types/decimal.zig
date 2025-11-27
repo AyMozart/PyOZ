@@ -15,6 +15,8 @@ const PyObject = py.PyObject;
 ///       return pyoz.Decimal.init("99.99");
 ///   }
 pub const Decimal = struct {
+    const _is_pyoz_decimal = true;
+
     /// String representation of the decimal value
     value: []const u8,
 

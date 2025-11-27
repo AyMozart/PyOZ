@@ -2712,3 +2712,54 @@ test "numpy - mismatched lengths raises ValueError" {
     );
     try std.testing.expect(try python.eval(bool, "mismatch_raised"));
 }
+
+// ============================================================================
+// Symreader Tests - Binary Format Parsing
+// ============================================================================
+
+const symreader = @import("symreader");
+const test_config = @import("test_config");
+
+const expected_stub_content = "# Test stub content\ndef hello(): ...\n";
+
+test "symreader - extract stubs from ELF binary" {
+    const elf_path = test_config.elf_test_lib;
+    const result = symreader.extractStubs(std.testing.allocator, elf_path) catch |err| {
+        std.debug.print("ELF extraction error: {}\n", .{err});
+        return err;
+    };
+    if (result) |stubs| {
+        defer std.testing.allocator.free(stubs);
+        try std.testing.expectEqualStrings(expected_stub_content, stubs);
+    } else {
+        return error.StubsNotFound;
+    }
+}
+
+test "symreader - extract stubs from PE binary" {
+    const pe_path = test_config.pe_test_lib;
+    const result = symreader.extractStubs(std.testing.allocator, pe_path) catch |err| {
+        std.debug.print("PE extraction error: {}\n", .{err});
+        return err;
+    };
+    if (result) |stubs| {
+        defer std.testing.allocator.free(stubs);
+        try std.testing.expectEqualStrings(expected_stub_content, stubs);
+    } else {
+        return error.StubsNotFound;
+    }
+}
+
+test "symreader - extract stubs from Mach-O binary" {
+    const macho_path = test_config.macho_test_lib;
+    const result = symreader.extractStubs(std.testing.allocator, macho_path) catch |err| {
+        std.debug.print("Mach-O extraction error: {}\n", .{err});
+        return err;
+    };
+    if (result) |stubs| {
+        defer std.testing.allocator.free(stubs);
+        try std.testing.expectEqualStrings(expected_stub_content, stubs);
+    } else {
+        return error.StubsNotFound;
+    }
+}

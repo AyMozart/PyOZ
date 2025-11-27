@@ -8,6 +8,8 @@ const py = @import("../python.zig");
 /// Internally stores the path as a string slice plus a reference to the
 /// Python string object that owns the memory.
 pub const Path = struct {
+    const _is_pyoz_path = true;
+
     path: []const u8,
     /// The Python string object that owns the path memory (may be null for literals)
     _py_str: ?*py.PyObject = null,

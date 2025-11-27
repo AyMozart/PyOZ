@@ -20,6 +20,8 @@ pub fn SetView(comptime T: type) type {
 /// SetView with explicit converter type - used internally
 pub fn SetViewWithConverter(comptime T: type, comptime Conv: type) type {
     return struct {
+        const _is_pyoz_set = true;
+
         py_set: *PyObject,
 
         const Self = @This();
@@ -74,6 +76,8 @@ pub fn SetViewWithConverter(comptime T: type, comptime Conv: type) type {
 /// Usage: fn myFunc() Set(i64) { ... }
 pub fn Set(comptime T: type) type {
     return struct {
+        const _is_pyoz_set = true;
+
         items: []const T,
 
         pub const ElementType = T;
@@ -83,6 +87,8 @@ pub fn Set(comptime T: type) type {
 /// Marker type for frozen set returns
 pub fn FrozenSet(comptime T: type) type {
     return struct {
+        const _is_pyoz_frozenset = true;
+
         items: []const T,
 
         pub const ElementType = T;

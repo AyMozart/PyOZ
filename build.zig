@@ -168,13 +168,114 @@ pub fn build(b: *std.Build) void {
     // Test Suite
     // ========================================================================
 
+    // Generate test stub library source code for symreader tests
+    // Includes both symbol-based and section-based stub embedding
+    const test_stub_source =
+        \\//! Test stub library for symreader tests
+        \\const test_stubs_content = "# Test stub content\ndef hello(): ...\n";
+        \\
+        \\// Symbol-based exports (for non-stripped binaries)
+        \\pub const __pyoz_stubs_ptr__: [*]const u8 = test_stubs_content.ptr;
+        \\pub const __pyoz_stubs_len__: usize = test_stubs_content.len;
+        \\comptime {
+        \\    @export(&__pyoz_stubs_ptr__, .{ .name = "__pyoz_stubs_data__" });
+        \\    @export(&__pyoz_stubs_len__, .{ .name = "__pyoz_stubs_len__" });
+        \\}
+        \\
+        \\// Section-based embedding (survives stripping)
+        \\// Format: "PYOZSTUB" magic (8 bytes) + length (8 bytes LE) + content
+        \\const builtin = @import("builtin");
+        \\const section_name = if (builtin.os.tag == .macos) "__DATA,__pyozstub" else ".pyozstub";
+        \\pub const __pyoz_stubs_section__: [16 + test_stubs_content.len]u8 linksection(section_name) = blk: {
+        \\    var data: [16 + test_stubs_content.len]u8 = undefined;
+        \\    // 8-byte magic header
+        \\    @memcpy(data[0..8], "PYOZSTUB");
+        \\    // 8-byte little-endian length
+        \\    const len = test_stubs_content.len;
+        \\    data[8] = @truncate(len);
+        \\    data[9] = @truncate(len >> 8);
+        \\    data[10] = @truncate(len >> 16);
+        \\    data[11] = @truncate(len >> 24);
+        \\    data[12] = @truncate(len >> 32);
+        \\    data[13] = @truncate(len >> 40);
+        \\    data[14] = @truncate(len >> 48);
+        \\    data[15] = @truncate(len >> 56);
+        \\    // Copy stub content
+        \\    @memcpy(data[16..], test_stubs_content);
+        \\    break :blk data;
+        \\};
+        \\
+        \\// Force the section data to be retained by exporting it
+        \\comptime {
+        \\    @export(&__pyoz_stubs_section__, .{ .name = "__pyoz_stubs_section__" });
+        \\}
+        \\
+        \\pub export fn PyInit_test_stub() ?*anyopaque { return null; }
+    ;
+
+    const wf = b.addWriteFiles();
+    const test_stub_file = wf.add("test_stub_lib.zig", test_stub_source);
+
+    // Build test stub libraries for each target format (ELF, PE, Mach-O)
+    const symreader_test_targets = [_]struct {
+        query: std.Target.Query,
+        name: []const u8,
+        ext: []const u8,
+    }{
+        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu }, .name = "test_stub_elf", .ext = ".so" },
+        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .windows }, .name = "test_stub_pe", .ext = ".dll" },
+        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .macos }, .name = "test_stub_macho", .ext = ".dylib" },
+    };
+
+    var test_stub_paths: [3]std.Build.LazyPath = undefined;
+    var test_stub_installs: [3]*std.Build.Step = undefined;
+
+    for (symreader_test_targets, 0..) |t, i| {
+        const stub_target = b.resolveTargetQuery(t.query);
+        const stub_lib = b.addLibrary(.{
+            .name = t.name,
+            .linkage = .dynamic,
+            .root_module = b.createModule(.{
+                .root_source_file = test_stub_file,
+                .target = stub_target,
+                .optimize = .Debug,
+            }),
+        });
+
+        const install_stub = b.addInstallArtifact(stub_lib, .{
+            .dest_dir = .{ .override = .{ .custom = "test_bins" } },
+            .dest_sub_path = b.fmt("{s}{s}", .{ t.name, t.ext }),
+        });
+
+        // Get the output path from the artifact itself
+        test_stub_paths[i] = stub_lib.getEmittedBin();
+        test_stub_installs[i] = &install_stub.step;
+    }
+
+    // Create symreader module for tests
+    const symreader_mod = b.addModule("symreader", .{
+        .root_source_file = b.path("src/cli/symreader.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/tests.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "symreader", .module = symreader_mod },
+            },
         }),
     });
+
+    // Pass test binary paths to tests via build options
+    const test_options = b.addOptions();
+    test_options.addOptionPath("elf_test_lib", test_stub_paths[0]);
+    test_options.addOptionPath("pe_test_lib", test_stub_paths[1]);
+    test_options.addOptionPath("macho_test_lib", test_stub_paths[2]);
+    tests.root_module.addOptions("test_config", test_options);
 
     // Enable sanitizers if requested
     if (sanitize) {
@@ -193,8 +294,11 @@ pub fn build(b: *std.Build) void {
     tests.linkLibC();
 
     const run_tests = b.addRunArtifact(tests);
-    // Tests depend on the example module being built first
+    // Tests depend on the example module and test stub libs being built first
     run_tests.step.dependOn(&install_example.step);
+    for (test_stub_installs) |install_step| {
+        run_tests.step.dependOn(install_step);
+    }
 
     const test_step = b.step("test", "Run the PyOZ test suite");
     test_step.dependOn(&run_tests.step);

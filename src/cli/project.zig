@@ -371,7 +371,7 @@ const lib_zig_template =
     \\// Module definition
     \\// ============================================================================
     \\
-    \\const Module = pyoz.module(.{
+    \\pub const Module = pyoz.module(.{
     \\    .name = "{[name]s}",
     \\    .doc = "{[name]s} - A Python extension module built with PyOZ",
     \\    .funcs = &.{
@@ -402,24 +402,31 @@ const build_zig_template =
     \\    const target = b.standardTargetOptions(.{});
     \\    const optimize = b.standardOptimizeOption(.{});
     \\
+    \\    // Strip option (can be set via -Dstrip=true or from pyoz CLI)
+    \\    const strip = b.option(bool, "strip", "Strip debug symbols from the binary") orelse false;
+    \\
     \\    // Get PyOZ dependency
     \\    const pyoz_dep = b.dependency("PyOZ", .{
     \\        .target = target,
     \\        .optimize = optimize,
     \\    });
     \\
+    \\    // Create the user's lib module (shared between library and stub generator)
+    \\    const user_lib_mod = b.createModule(.{
+    \\        .root_source_file = b.path("src/lib.zig"),
+    \\        .target = target,
+    \\        .optimize = optimize,
+    \\        .strip = strip,
+    \\        .imports = &.{
+    \\            .{ .name = "PyOZ", .module = pyoz_dep.module("PyOZ") },
+    \\        },
+    \\    });
+    \\
     \\    // Build the Python extension as a dynamic library
     \\    const lib = b.addLibrary(.{
     \\        .name = "{[name]s}",
     \\        .linkage = .dynamic,
-    \\        .root_module = b.createModule(.{
-    \\            .root_source_file = b.path("src/lib.zig"),
-    \\            .target = target,
-    \\            .optimize = optimize,
-    \\            .imports = &.{
-    \\                .{ .name = "PyOZ", .module = pyoz_dep.module("PyOZ") },
-    \\            },
-    \\        }),
+    \\        .root_module = user_lib_mod,
     \\    });
     \\
     \\    // Link libc (required for Python C API)
@@ -433,6 +440,7 @@ const build_zig_template =
     \\        .dest_sub_path = "{[name]s}" ++ ext,
     \\    });
     \\    b.getInstallStep().dependOn(&install.step);
+    \\
     \\}
     \\
 ;

@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2025-11-27
+
+### Added
+- **Automatic `.pyi` stub generation** - Type stubs are now generated at compile time
+  - Full Python type hints for all exported functions, classes, methods, and properties
+  - Supports complex types: `list[T]`, `dict[K, V]`, `tuple[...]`, `Optional[T]`, `Union[...]`
+  - Docstrings are included in generated stubs
+  - Stubs are automatically embedded in the compiled binary and extracted during wheel building
+  - Works with stripped binaries via dedicated `.pyozstub` section that survives stripping
+  - New `--no-stubs` flag for `pyoz build` to disable stub generation
+  - New `--stubs` flag (default) to explicitly enable stub generation
+
+- **Strip support in pyproject.toml** - Binary stripping now fully functional
+  - Added `strip = true` option in `[tool.pyoz]` section
+  - Stubs survive stripping via section-based embedding with `PYOZSTUB` magic header
+  - Works with all optimization levels including `ReleaseSmall`
+
+- **Cross-platform symreader** - Extract embedded data from compiled modules
+  - Supports ELF (Linux), PE (Windows), and Mach-O (macOS) binary formats
+  - Section-based extraction (`.pyozstub`) for stripped binaries
+  - Symbol-based extraction (`__pyoz_stubs_data__`, `__pyoz_stubs_len__`) as fallback
+  - Comprehensive test suite with cross-compiled test binaries for all formats
+
+- **Symreader tests in build.zig** - Test infrastructure for binary format parsing
+  - Cross-compiles test stub libraries for x86_64-linux, x86_64-windows, x86_64-macos
+  - Tests ELF, PE, and Mach-O parsers with real binaries
+  - Uses `b.addWriteFiles()` to inject test code at build time
+
+### Changed
+- Generated `build.zig` template now includes `-Dstrip` option support
+- Stubs are embedded in both symbol form (for non-stripped) and section form (for stripped)
+- Section names: `.pyozstub` (ELF/PE), `__DATA,__pyozstub` (Mach-O)
+
 ## [0.3.1] - 2025-11-26
 
 ### Added

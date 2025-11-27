@@ -65,6 +65,7 @@ pub fn init(allocator: std.mem.Allocator, args: []const []const u8) !void {
 pub fn build(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var release = false;
     var show_help = false;
+    var generate_stubs = true;
 
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -73,6 +74,10 @@ pub fn build(allocator: std.mem.Allocator, args: []const []const u8) !void {
             release = true;
         } else if (std.mem.eql(u8, arg, "--debug") or std.mem.eql(u8, arg, "-d")) {
             release = false;
+        } else if (std.mem.eql(u8, arg, "--no-stubs")) {
+            generate_stubs = false;
+        } else if (std.mem.eql(u8, arg, "--stubs")) {
+            generate_stubs = true;
         }
     }
 
@@ -85,6 +90,8 @@ pub fn build(allocator: std.mem.Allocator, args: []const []const u8) !void {
             \\Options:
             \\  -d, --debug    Build in debug mode (default)
             \\  -r, --release  Build in release mode (optimized)
+            \\  --stubs        Generate .pyi type stub file (default)
+            \\  --no-stubs     Do not generate .pyi type stub file
             \\  -h, --help     Show this help message
             \\
             \\The wheel will be placed in the dist/ directory.
@@ -93,7 +100,7 @@ pub fn build(allocator: std.mem.Allocator, args: []const []const u8) !void {
         return;
     }
 
-    const wheel_path = try wheel.buildWheel(allocator, release);
+    const wheel_path = try wheel.buildWheel(allocator, release, generate_stubs);
     defer allocator.free(wheel_path);
 }
 

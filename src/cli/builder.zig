@@ -163,7 +163,7 @@ pub fn buildModule(allocator: std.mem.Allocator, release: bool) !BuildResult {
         // Determine optimization level:
         // - If --release flag is passed, always use ReleaseFast
         // - Otherwise, use the optimize setting from pyproject.toml (empty = debug)
-        var argv_buf: [3][]const u8 = undefined;
+        var argv_buf: [4][]const u8 = undefined;
         var argv_len: usize = 2;
         argv_buf[0] = "zig";
         argv_buf[1] = "build";
@@ -172,8 +172,15 @@ pub fn buildModule(allocator: std.mem.Allocator, release: bool) !BuildResult {
         const optimize_value = if (release) "ReleaseFast" else config.getOptimize();
         if (optimize_value.len > 0) {
             const optimize_arg = std.fmt.bufPrint(&optimize_arg_buf, "-Doptimize={s}", .{optimize_value}) catch "-Doptimize=ReleaseFast";
-            argv_buf[2] = optimize_arg;
-            argv_len = 3;
+            argv_buf[argv_len] = optimize_arg;
+            argv_len += 1;
+        }
+
+        // Pass strip option if enabled in pyproject.toml
+        if (config.strip) {
+            std.debug.print("  Strip: enabled\n", .{});
+            argv_buf[argv_len] = "-Dstrip=true";
+            argv_len += 1;
         }
 
         const argv: []const []const u8 = argv_buf[0..argv_len];

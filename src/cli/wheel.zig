@@ -4,15 +4,17 @@ const project = @import("project.zig");
 const builder = @import("builder.zig");
 const pypi = @import("pypi.zig");
 const zip = @import("zip.zig");
+const symreader = @import("symreader.zig");
 
 /// Build a wheel package (.whl)
 /// A wheel is a ZIP file with a specific structure:
 ///   {module}.{ext}                    - The compiled extension
+///   {module}.pyi                      - Type stubs (optional)
 ///   {distribution}-{version}.dist-info/
 ///     WHEEL                           - Wheel metadata
 ///     METADATA                        - Package metadata
 ///     RECORD                          - File hashes
-pub fn buildWheel(allocator: std.mem.Allocator, release: bool) ![]const u8 {
+pub fn buildWheel(allocator: std.mem.Allocator, release: bool, generate_stubs: bool) ![]const u8 {
     // Load project configuration
     var config = project.toml.loadPyProject(allocator) catch |err| {
         if (err == error.PyProjectNotFound) {
@@ -61,8 +63,26 @@ pub fn buildWheel(allocator: std.mem.Allocator, release: bool) ![]const u8 {
     const wheel_path = try std.fmt.allocPrint(allocator, "dist/{s}", .{wheel_filename});
     errdefer allocator.free(wheel_path);
 
+    // Extract stubs from the compiled module if enabled
+    var stub_content: ?[]const u8 = null;
+    defer if (stub_content) |sc| allocator.free(sc);
+
+    if (generate_stubs) {
+        std.debug.print("  Extracting type stubs from module...\n", .{});
+        stub_content = symreader.extractStubs(allocator, build_result.module_path) catch |err| blk: {
+            std.debug.print("  Warning: Could not extract stubs: {}\n", .{err});
+            break :blk null;
+        };
+
+        if (stub_content) |_| {
+            std.debug.print("  Including type stubs: {s}.pyi\n", .{config.name});
+        } else {
+            std.debug.print("  Note: No stubs found in module. Ensure your module uses pyoz.module().\n", .{});
+        }
+    }
+
     // Create the wheel (ZIP file)
-    try createWheelZip(allocator, wheel_path, &config, &python, build_result.module_path, build_result.module_name);
+    try createWheelZip(allocator, wheel_path, &config, &python, build_result.module_path, build_result.module_name, stub_content);
 
     std.debug.print("\nWheel created: {s}\n", .{wheel_path});
     std.debug.print("\nTo install locally: pip install {s}\n", .{wheel_path});
@@ -79,6 +99,7 @@ fn createWheelZip(
     python: *const builder.PythonConfig,
     module_path: []const u8,
     module_name: []const u8,
+    stub_content: ?[]const u8,
 ) !void {
     const cwd = std.fs.cwd();
 
@@ -91,6 +112,15 @@ fn createWheelZip(
 
     // Add the compiled module
     try z.addFileFromDisk(module_name, module_path);
+
+    // Add the .pyi stub file if provided (from memory content)
+    var stub_name: ?[]const u8 = null;
+    defer if (stub_name) |sn| allocator.free(sn);
+
+    if (stub_content) |sc| {
+        stub_name = try std.fmt.allocPrint(allocator, "{s}.pyi", .{config.name});
+        try z.addFile(stub_name.?, sc);
+    }
 
     // Create dist-info directory name
     const dist_info_name = try std.fmt.allocPrint(allocator, "{s}-{s}.dist-info", .{ config.name, config.getVersion() });
@@ -142,13 +172,23 @@ fn createWheelZip(
     try z.addFile(metadata_file_path, metadata_content);
 
     // Create RECORD file content (list of files with hashes)
-    const record_content = try std.fmt.allocPrint(allocator,
-        \\{s},,
-        \\{s}/WHEEL,,
-        \\{s}/METADATA,,
-        \\{s}/RECORD,,
-        \\
-    , .{ module_name, dist_info_name, dist_info_name, dist_info_name });
+    const record_content = if (stub_name) |sn|
+        try std.fmt.allocPrint(allocator,
+            \\{s},,
+            \\{s},,
+            \\{s}/WHEEL,,
+            \\{s}/METADATA,,
+            \\{s}/RECORD,,
+            \\
+        , .{ module_name, sn, dist_info_name, dist_info_name, dist_info_name })
+    else
+        try std.fmt.allocPrint(allocator,
+            \\{s},,
+            \\{s}/WHEEL,,
+            \\{s}/METADATA,,
+            \\{s}/RECORD,,
+            \\
+        , .{ module_name, dist_info_name, dist_info_name, dist_info_name });
     defer allocator.free(record_content);
 
     const record_file_path = try std.fmt.allocPrint(allocator, "{s}/RECORD", .{dist_info_name});

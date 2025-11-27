@@ -50,6 +50,7 @@ const std = @import("std");
 pub const py = @import("python.zig");
 pub const class_mod = @import("class.zig");
 pub const module_mod = @import("module.zig");
+pub const stubs_mod = @import("stubs.zig");
 pub const version = @import("version");
 
 // =============================================================================
@@ -577,6 +578,55 @@ pub fn module(comptime config: anytype) type {
 
         // Expose class types for external use
         pub const registered_classes = class_types;
+
+        /// Generate Python type stub (.pyi) content for this module
+        /// Returns the complete stub file content as a comptime string
+        pub fn getStubs() []const u8 {
+            return comptime stubs_mod.generateModuleStubs(config);
+        }
+
+        /// Stubs data for extraction by pyoz CLI (exported as data symbols)
+        const __pyoz_stubs_slice__: []const u8 = blk: {
+            @setEvalBranchQuota(100000);
+            break :blk stubs_mod.generateModuleStubs(config);
+        };
+        pub const __pyoz_stubs_ptr__: [*]const u8 = __pyoz_stubs_slice__.ptr;
+        pub const __pyoz_stubs_len__: usize = __pyoz_stubs_slice__.len;
+
+        // Export data symbols for the symbol reader to find (works with non-stripped binaries)
+        comptime {
+            @export(&__pyoz_stubs_ptr__, .{ .name = "__pyoz_stubs_data__" });
+            @export(&__pyoz_stubs_len__, .{ .name = "__pyoz_stubs_len__" });
+        }
+
+        /// Stubs data in a named section that survives stripping.
+        /// Format: 8-byte magic "PYOZSTUB", 8-byte little-endian length, then content.
+        /// Section name: ".pyozstub" (ELF/PE), "__DATA,__pyozstub" (Mach-O)
+        const builtin = @import("builtin");
+        const pyoz_section_name = if (builtin.os.tag == .macos) "__DATA,__pyozstub" else ".pyozstub";
+        pub const __pyoz_stubs_section__: [16 + __pyoz_stubs_slice__.len]u8 linksection(pyoz_section_name) = blk: {
+            var data: [16 + __pyoz_stubs_slice__.len]u8 = undefined;
+            // 8-byte magic header
+            @memcpy(data[0..8], "PYOZSTUB");
+            // 8-byte little-endian length
+            const len = __pyoz_stubs_slice__.len;
+            data[8] = @truncate(len);
+            data[9] = @truncate(len >> 8);
+            data[10] = @truncate(len >> 16);
+            data[11] = @truncate(len >> 24);
+            data[12] = @truncate(len >> 32);
+            data[13] = @truncate(len >> 40);
+            data[14] = @truncate(len >> 48);
+            data[15] = @truncate(len >> 56);
+            // Copy stub content
+            @memcpy(data[16..], __pyoz_stubs_slice__);
+            break :blk data;
+        };
+
+        // Force the section data to be retained by exporting it
+        comptime {
+            @export(&__pyoz_stubs_section__, .{ .name = "__pyoz_stubs_section__" });
+        }
     };
 }
 

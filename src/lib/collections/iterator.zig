@@ -29,6 +29,8 @@ pub fn IteratorView(comptime T: type) type {
 /// IteratorView with explicit converter type - used internally
 pub fn IteratorViewWithConverter(comptime T: type, comptime Conv: type) type {
     return struct {
+        const _is_pyoz_iterator = true;
+
         py_iter: *PyObject,
 
         const Self = @This();

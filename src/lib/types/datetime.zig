@@ -5,6 +5,8 @@
 
 /// A date type (year, month, day)
 pub const Date = struct {
+    const _is_pyoz_date = true;
+
     year: i32,
     month: u8,
     day: u8,
@@ -16,6 +18,8 @@ pub const Date = struct {
 
 /// A time type (hour, minute, second, microsecond)
 pub const Time = struct {
+    const _is_pyoz_time = true;
+
     hour: u8,
     minute: u8,
     second: u8,
@@ -32,6 +36,8 @@ pub const Time = struct {
 
 /// A datetime type (date + time)
 pub const DateTime = struct {
+    const _is_pyoz_datetime = true;
+
     year: i32,
     month: u8,
     day: u8,
@@ -59,6 +65,8 @@ pub const DateTime = struct {
 
 /// A timedelta type (duration)
 pub const TimeDelta = struct {
+    const _is_pyoz_timedelta = true;
+
     days: i32,
     seconds: i32,
     microseconds: i32,
