@@ -342,6 +342,10 @@ const pyproject_template =
     \\# Strip debug symbols in release builds
     \\# strip = true
     \\
+    \\# Linux platform tag for wheel builds (default: "linux_x86_64" or "linux_aarch64")
+    \\# Use manylinux tags only if building in a manylinux container
+    \\# linux-platform-tag = "manylinux_2_17_x86_64"
+    \\
 ;
 
 const lib_zig_template =

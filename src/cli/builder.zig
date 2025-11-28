@@ -27,7 +27,7 @@ pub const PythonConfig = struct {
 };
 
 /// Get the Python executable name for the current platform
-fn getPythonCommand() []const u8 {
+pub fn getPythonCommand() []const u8 {
     return if (builtin.os.tag == .windows) "python" else "python3";
 }
 

@@ -46,12 +46,14 @@ pub fn buildWheel(allocator: std.mem.Allocator, release: bool, generate_stubs: b
 
     // Generate wheel filename
     // Format: {distribution}-{version}-{python}-{abi}-{platform}.whl
-    const platform_tag = getPlatformTag();
+    const platform_tag = try getPlatformTag(allocator, config.getLinuxPlatformTag());
+    defer if (builtin.os.tag == .macos) allocator.free(platform_tag);
     const python_tag = try std.fmt.allocPrint(allocator, "cp{d}{d}", .{ python.version_major, python.version_minor });
     defer allocator.free(python_tag);
 
-    // Use abi3 for stable ABI compatibility (Python 3.2+)
-    const abi_tag = "abi3";
+    // Use CPython ABI tag (e.g., cp312 for Python 3.12)
+    // Note: abi3 would require building with Py_LIMITED_API which we don't currently support
+    const abi_tag = python_tag;
 
     const wheel_filename = try std.fmt.allocPrint(
         allocator,
@@ -127,13 +129,14 @@ fn createWheelZip(
     defer allocator.free(dist_info_name);
 
     // Create WHEEL file content
+    // Use CPython ABI tag (cpXY-cpXY) not abi3 since we don't use Py_LIMITED_API
     const wheel_content = try std.fmt.allocPrint(allocator,
         \\Wheel-Version: 1.0
         \\Generator: pyoz
         \\Root-Is-Purelib: false
-        \\Tag: cp{d}{d}-abi3-{s}
+        \\Tag: cp{d}{d}-cp{d}{d}-{s}
         \\
-    , .{ python.version_major, python.version_minor, getPlatformTag() });
+    , .{ python.version_major, python.version_minor, python.version_major, python.version_minor, try getPlatformTag(allocator, config.getLinuxPlatformTag()) });
     defer allocator.free(wheel_content);
 
     const wheel_file_path = try std.fmt.allocPrint(allocator, "{s}/WHEEL", .{dist_info_name});
@@ -200,18 +203,19 @@ fn createWheelZip(
 }
 
 /// Get platform tag for wheel filename
-fn getPlatformTag() []const u8 {
+/// If linux_platform_tag is provided (non-empty), use it for Linux builds.
+/// Otherwise, use the default platform-specific tag.
+/// For macOS, detects the actual OS version at runtime.
+fn getPlatformTag(allocator: std.mem.Allocator, linux_platform_tag: []const u8) ![]const u8 {
     return switch (builtin.os.tag) {
-        .linux => switch (builtin.cpu.arch) {
-            .x86_64 => "manylinux_2_17_x86_64",
-            .aarch64 => "manylinux_2_17_aarch64",
+        .linux => if (linux_platform_tag.len > 0)
+            linux_platform_tag
+        else switch (builtin.cpu.arch) {
+            .x86_64 => "linux_x86_64",
+            .aarch64 => "linux_aarch64",
             else => "linux_unknown",
         },
-        .macos => switch (builtin.cpu.arch) {
-            .x86_64 => "macosx_10_9_x86_64",
-            .aarch64 => "macosx_11_0_arm64",
-            else => "macosx_unknown",
-        },
+        .macos => try getMacOSPlatformTag(allocator),
         .windows => switch (builtin.cpu.arch) {
             .x86_64 => "win_amd64",
             .x86 => "win32",
@@ -220,6 +224,42 @@ fn getPlatformTag() []const u8 {
         },
         else => "unknown",
     };
+}
+
+/// Get macOS platform tag by detecting the actual OS version at runtime via Python
+fn getMacOSPlatformTag(allocator: std.mem.Allocator) ![]const u8 {
+    const arch_str = switch (builtin.cpu.arch) {
+        .x86_64 => "x86_64",
+        .aarch64 => "arm64",
+        else => "unknown",
+    };
+
+    // Get macOS version using Python's platform module
+    const python_cmd = builder.getPythonCommand();
+    const result = builder.runCommand(allocator, &.{
+        python_cmd, "-c", "import platform; print(platform.mac_ver()[0])",
+    }) catch {
+        // Fallback to safe defaults if detection fails
+        return if (builtin.cpu.arch == .aarch64) "macosx_11_0_arm64" else "macosx_10_9_x86_64";
+    };
+    defer allocator.free(result);
+
+    const version_str = std.mem.trim(u8, result, &std.ascii.whitespace);
+
+    // Parse version (e.g., "14.5" or "13.2.1")
+    var major: u32 = 10;
+    var minor: u32 = 9;
+
+    var parts = std.mem.splitScalar(u8, version_str, '.');
+    if (parts.next()) |major_str| {
+        major = std.fmt.parseInt(u32, major_str, 10) catch 10;
+    }
+    if (parts.next()) |minor_str| {
+        minor = std.fmt.parseInt(u32, minor_str, 10) catch 9;
+    }
+
+    // Format: macosx_{major}_{minor}_{arch}
+    return try std.fmt.allocPrint(allocator, "macosx_{d}_{d}_{s}", .{ major, minor, arch_str });
 }
 
 /// Publish wheel(s) to PyPI or TestPyPI

@@ -13,6 +13,7 @@ pub const PyProjectConfig = struct {
     module_path: []const u8 = "",
     optimize: []const u8 = "",
     strip: bool = false,
+    linux_platform_tag: []const u8 = "",
 
     // Track which fields were allocated
     name_allocated: bool = false,
@@ -21,6 +22,7 @@ pub const PyProjectConfig = struct {
     python_requires_allocated: bool = false,
     module_path_allocated: bool = false,
     optimize_allocated: bool = false,
+    linux_platform_tag_allocated: bool = false,
 
     pub fn deinit(self: *PyProjectConfig, allocator: std.mem.Allocator) void {
         if (self.name_allocated) allocator.free(self.name);
@@ -29,6 +31,7 @@ pub const PyProjectConfig = struct {
         if (self.python_requires_allocated) allocator.free(self.python_requires);
         if (self.module_path_allocated) allocator.free(self.module_path);
         if (self.optimize_allocated) allocator.free(self.optimize);
+        if (self.linux_platform_tag_allocated) allocator.free(self.linux_platform_tag);
     }
 
     /// Get version with fallback to default
@@ -49,6 +52,11 @@ pub const PyProjectConfig = struct {
     /// Get optimize (empty string means debug/unset)
     pub fn getOptimize(self: PyProjectConfig) []const u8 {
         return self.optimize;
+    }
+
+    /// Get linux platform tag (empty string means use default linux_* tag)
+    pub fn getLinuxPlatformTag(self: PyProjectConfig) []const u8 {
+        return self.linux_platform_tag;
     }
 };
 
@@ -112,6 +120,9 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) !PyProjectConfig
                     config.optimize_allocated = true;
                 } else if (std.mem.eql(u8, key, "strip")) {
                     config.strip = std.mem.eql(u8, value, "true");
+                } else if (std.mem.eql(u8, key, "linux-platform-tag")) {
+                    config.linux_platform_tag = try allocator.dupe(u8, value);
+                    config.linux_platform_tag_allocated = true;
                 }
             },
             else => {},

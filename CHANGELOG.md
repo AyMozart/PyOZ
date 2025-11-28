@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2025-11-28
+
+### Fixed
+- **Incorrect wheel ABI tag** - Wheels were incorrectly tagged as `abi3` even though PyOZ doesn't use `Py_LIMITED_API`
+  - Changed from `cp312-abi3-platform` to correct `cp312-cp312-platform` format
+  - ABI3 support will be added in a future release with proper Limited API compliance
+
+- **Misleading Linux platform tag** - Changed default from `manylinux_2_17` to `linux_x86_64`/`linux_aarch64`
+  - `manylinux` tags promise glibc compatibility that we can't guarantee without building in manylinux containers
+  - Users can now override via `linux-platform-tag` in pyproject.toml for proper manylinux builds
+
+- **Hardcoded macOS platform tag** - Now detects actual macOS version at runtime
+  - Previously hardcoded `macosx_10_9_x86_64` and `macosx_11_0_arm64`
+  - Now uses Python's `platform.mac_ver()` to detect actual OS version (e.g., `macosx_14_5_arm64`)
+
+### Added
+- **`linux-platform-tag` configuration option** in pyproject.toml
+  ```toml
+  [tool.pyoz]
+  # Override Linux platform tag for manylinux builds
+  linux-platform-tag = "manylinux_2_17_x86_64"
+  ```
+  - Allows users building in manylinux Docker containers to use proper manylinux tags
+  - Default remains `linux_x86_64` / `linux_aarch64` for honest compatibility
+
 ## [0.5.0] - 2025-11-27
 
 ### Added
