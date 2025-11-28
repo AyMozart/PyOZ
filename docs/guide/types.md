@@ -61,7 +61,64 @@ These provide read access to Python collections without copying:
 | `pyoz.Dict(K, V)` | `dict` | `.{ .entries = &.{...} }` |
 | `pyoz.Set(T)` | `set` | `.{ .items = &.{...} }` |
 | `pyoz.FrozenSet(T)` | `frozenset` | `.{ .items = &.{...} }` |
+| `pyoz.Iterator(T)` | `list` | `.{ .items = &.{...} }` (eager) |
+| `pyoz.LazyIterator(T, State)` | iterator | Lazy on-demand iteration |
 | `struct { T, U }` | `tuple` | `return .{ a, b };` |
+
+### Iterator vs LazyIterator
+
+PyOZ provides two ways to return iterable data:
+
+**`Iterator(T)`** - Eager iteration, converts to Python list immediately:
+
+```zig
+fn get_fibonacci() pyoz.Iterator(i64) {
+    const fibs = [_]i64{ 1, 1, 2, 3, 5, 8, 13, 21, 34, 55 };
+    return .{ .items = &fibs };
+}
+// Python: get_fibonacci() returns [1, 1, 2, 3, 5, 8, 13, 21, 34, 55]
+```
+
+**`LazyIterator(T, State)`** - Lazy iteration, generates values on-demand:
+
+```zig
+const RangeState = struct {
+    current: i64,
+    end: i64,
+    step: i64,
+
+    pub fn next(self: *@This()) ?i64 {
+        if (self.current >= self.end) return null;
+        const val = self.current;
+        self.current += self.step;
+        return val;
+    }
+};
+
+fn lazy_range(start: i64, end: i64, step: i64) pyoz.LazyIterator(i64, RangeState) {
+    return .{ .state = .{ .current = start, .end = end, .step = step } };
+}
+// Python: lazy_range(0, 1000000, 1) returns an iterator (memory efficient!)
+```
+
+**When to use which:**
+
+| Use Case | Type | Reason |
+|----------|------|--------|
+| Small, known data | `Iterator(T)` | Simple, returns a list |
+| Large/infinite sequences | `LazyIterator(T, State)` | Memory efficient |
+| Need random access | `Iterator(T)` | Lists support indexing |
+| Stream processing | `LazyIterator(T, State)` | Values computed on-demand |
+
+### View Types (Input Only)
+
+View types provide **zero-copy read access** to Python collections. They are **consumer-only** - you can receive them as function parameters but cannot return them. This asymmetry exists because:
+
+1. Views hold references to Python objects that must remain valid
+2. The underlying Python object owns the memory
+3. Returning a view would require the caller to manage Python object lifetimes
+
+For returning collections, use the producer types (`Set`, `Dict`, `Iterator`, etc.) which create new Python objects.
 
 ### Fixed-Size Arrays
 

@@ -51,7 +51,7 @@ pub const BufferInfo = struct {
 /// ```
 pub fn BufferView(comptime T: type) type {
     return struct {
-        const _is_pyoz_buffer = true;
+        pub const _is_pyoz_buffer = true;
 
         /// The underlying data as a Zig slice (read-only)
         data: []const T,
@@ -171,7 +171,7 @@ pub fn BufferView(comptime T: type) type {
 /// ```
 pub fn BufferViewMut(comptime T: type) type {
     return struct {
-        const _is_pyoz_buffer = true;
+        pub const _is_pyoz_buffer_mut = true;
 
         /// The underlying data as a mutable Zig slice
         data: []T,

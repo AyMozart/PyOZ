@@ -39,6 +39,9 @@ pub const BufferViewMut = buffer_types.BufferViewMut;
 pub const BufferInfo = buffer_types.BufferInfo;
 const checkBufferFormat = buffer_types.checkBufferFormat;
 
+const iterator_types = @import("collections/iterator.zig");
+const LazyIteratorWrapper = iterator_types.LazyIteratorWrapper;
+
 /// Type conversion implementations - creates a converter aware of registered classes
 pub fn Converter(comptime class_types: []const type) type {
     return struct {
@@ -135,12 +138,12 @@ pub fn Converter(comptime class_types: []const type) type {
                 .void => py.Py_RETURN_NONE(),
                 .@"struct" => |struct_info| {
                     // Handle Complex type - convert to Python complex
-                    if (T == Complex) {
+                    if (@hasDecl(T, "_is_pyoz_complex")) {
                         return py.PyComplex_FromDoubles(value.real, value.imag);
                     }
 
                     // Handle DateTime types
-                    if (T == DateTime) {
+                    if (@hasDecl(T, "_is_pyoz_datetime")) {
                         return py.PyDateTime_FromDateAndTime(
                             @intCast(value.year),
                             @intCast(value.month),
@@ -152,7 +155,7 @@ pub fn Converter(comptime class_types: []const type) type {
                         );
                     }
 
-                    if (T == Date) {
+                    if (@hasDecl(T, "_is_pyoz_date")) {
                         return py.PyDate_FromDate(
                             @intCast(value.year),
                             @intCast(value.month),
@@ -160,7 +163,7 @@ pub fn Converter(comptime class_types: []const type) type {
                         );
                     }
 
-                    if (T == Time) {
+                    if (@hasDecl(T, "_is_pyoz_time")) {
                         return py.PyTime_FromTime(
                             @intCast(value.hour),
                             @intCast(value.minute),
@@ -169,7 +172,7 @@ pub fn Converter(comptime class_types: []const type) type {
                         );
                     }
 
-                    if (T == TimeDelta) {
+                    if (@hasDecl(T, "_is_pyoz_timedelta")) {
                         return py.PyDelta_FromDSU(
                             value.days,
                             value.seconds,
@@ -178,17 +181,22 @@ pub fn Converter(comptime class_types: []const type) type {
                     }
 
                     // Handle Bytes type
-                    if (T == Bytes) {
+                    if (@hasDecl(T, "_is_pyoz_bytes")) {
                         return py.PyBytes_FromStringAndSize(value.data.ptr, @intCast(value.data.len));
                     }
 
+                    // Handle ByteArray type
+                    if (@hasDecl(T, "_is_pyoz_bytearray")) {
+                        return py.PyByteArray_FromStringAndSize(value.data.ptr, @intCast(value.data.len));
+                    }
+
                     // Handle Path type
-                    if (T == Path) {
+                    if (@hasDecl(T, "_is_pyoz_path")) {
                         return py.PyPath_FromString(value.path);
                     }
 
                     // Handle Decimal type
-                    if (T == Decimal) {
+                    if (@hasDecl(T, "_is_pyoz_decimal")) {
                         return PyDecimal_FromString(value.value);
                     }
 
@@ -211,7 +219,7 @@ pub fn Converter(comptime class_types: []const type) type {
                     }
 
                     // Check if this is a Dict type - convert entries to Python dict
-                    if (@hasDecl(T, "KeyType") and @hasDecl(T, "ValueType") and @hasDecl(T, "Entry")) {
+                    if (@hasDecl(T, "_is_pyoz_dict")) {
                         const dict = py.PyDict_New() orelse return null;
                         for (value.entries) |entry| {
                             const py_key = toPy(T.KeyType, entry.key) orelse {
@@ -235,9 +243,32 @@ pub fn Converter(comptime class_types: []const type) type {
                         return dict;
                     }
 
+                    // Check if this is an Iterator type - convert items to Python list
+                    if (@hasDecl(T, "_is_pyoz_iterator")) {
+                        const list = py.PyList_New(@intCast(value.items.len)) orelse return null;
+                        for (value.items, 0..) |item, i| {
+                            const py_item = toPy(T.ElementType, item) orelse {
+                                py.Py_DecRef(list);
+                                return null;
+                            };
+                            // PyList_SetItem steals reference
+                            if (py.PyList_SetItem(list, @intCast(i), py_item) < 0) {
+                                py.Py_DecRef(list);
+                                return null;
+                            }
+                        }
+                        return list;
+                    }
+
+                    // Check if this is a LazyIterator type - create Python iterator object
+                    if (@hasDecl(T, "_is_pyoz_lazy_iterator")) {
+                        const Wrapper = LazyIteratorWrapper(T.ElementType, T.StateType);
+                        return Wrapper.create(value);
+                    }
+
                     // Check if this is a Set or FrozenSet type - convert items to Python set
-                    if (@hasDecl(T, "ElementType") and @hasField(T, "items") and !@hasDecl(T, "KeyType")) {
-                        const is_frozen = @hasDecl(T, "is_frozen") and T.is_frozen;
+                    if (@hasDecl(T, "_is_pyoz_set") or @hasDecl(T, "_is_pyoz_frozenset")) {
+                        const is_frozen = @hasDecl(T, "_is_pyoz_frozenset");
                         const set_obj = if (is_frozen)
                             py.PyFrozenSet_New(null)
                         else
@@ -316,238 +347,241 @@ pub fn Converter(comptime class_types: []const type) type {
                 return error.TypeError;
             }
 
-            // Check if T is Complex type
-            if (T == Complex) {
-                if (py.PyComplex_Check(obj)) {
-                    return Complex{
-                        .real = py.PyComplex_RealAsDouble(obj),
-                        .imag = py.PyComplex_ImagAsDouble(obj),
-                    };
-                } else if (py.PyFloat_Check(obj)) {
-                    return Complex{
-                        .real = py.PyFloat_AsDouble(obj),
-                        .imag = 0.0,
-                    };
-                } else if (py.PyLong_Check(obj)) {
-                    return Complex{
-                        .real = py.PyLong_AsDouble(obj),
-                        .imag = 0.0,
-                    };
-                }
-                return error.TypeError;
-            }
-
-            // Check if T is DateTime type
-            if (T == DateTime) {
-                if (py.PyDateTime_Check(obj)) {
-                    return DateTime{
-                        .year = @intCast(py.PyDateTime_GET_YEAR(obj)),
-                        .month = @intCast(py.PyDateTime_GET_MONTH(obj)),
-                        .day = @intCast(py.PyDateTime_GET_DAY(obj)),
-                        .hour = @intCast(py.PyDateTime_DATE_GET_HOUR(obj)),
-                        .minute = @intCast(py.PyDateTime_DATE_GET_MINUTE(obj)),
-                        .second = @intCast(py.PyDateTime_DATE_GET_SECOND(obj)),
-                        .microsecond = @intCast(py.PyDateTime_DATE_GET_MICROSECOND(obj)),
-                    };
-                }
-                return error.TypeError;
-            }
-
-            // Check if T is Date type
-            if (T == Date) {
-                if (py.PyDate_Check(obj)) {
-                    return Date{
-                        .year = @intCast(py.PyDateTime_GET_YEAR(obj)),
-                        .month = @intCast(py.PyDateTime_GET_MONTH(obj)),
-                        .day = @intCast(py.PyDateTime_GET_DAY(obj)),
-                    };
-                }
-                return error.TypeError;
-            }
-
-            // Check if T is Time type
-            if (T == Time) {
-                if (py.PyTime_Check(obj)) {
-                    return Time{
-                        .hour = @intCast(py.PyDateTime_TIME_GET_HOUR(obj)),
-                        .minute = @intCast(py.PyDateTime_TIME_GET_MINUTE(obj)),
-                        .second = @intCast(py.PyDateTime_TIME_GET_SECOND(obj)),
-                        .microsecond = @intCast(py.PyDateTime_TIME_GET_MICROSECOND(obj)),
-                    };
-                }
-                return error.TypeError;
-            }
-
-            // Check if T is TimeDelta type
-            if (T == TimeDelta) {
-                if (py.PyDelta_Check(obj)) {
-                    return TimeDelta{
-                        .days = py.PyDateTime_DELTA_GET_DAYS(obj),
-                        .seconds = py.PyDateTime_DELTA_GET_SECONDS(obj),
-                        .microseconds = py.PyDateTime_DELTA_GET_MICROSECONDS(obj),
-                    };
-                }
-                return error.TypeError;
-            }
-
-            // Check if T is Bytes type
-            if (T == Bytes) {
-                if (py.PyBytes_Check(obj)) {
-                    const size = py.PyBytes_Size(obj);
-                    const ptr = py.PyBytes_AsString(obj) orelse return error.ConversionError;
-                    return Bytes{ .data = ptr[0..@intCast(size)] };
-                } else if (py.PyByteArray_Check(obj)) {
-                    const size = py.PyByteArray_Size(obj);
-                    const ptr = py.PyByteArray_AsString(obj) orelse return error.ConversionError;
-                    return Bytes{ .data = ptr[0..@intCast(size)] };
-                }
-                return error.TypeError;
-            }
-
-            // Check if T is ByteArray type
-            if (T == ByteArray) {
-                if (py.PyByteArray_Check(obj)) {
-                    const size = py.PyByteArray_Size(obj);
-                    const ptr = py.PyByteArray_AsString(obj) orelse return error.ConversionError;
-                    return ByteArray{ .data = ptr[0..@intCast(size)] };
-                }
-                return error.TypeError;
-            }
-
-            // Check if T is Decimal type
-            if (T == Decimal) {
-                if (PyDecimal_Check(obj)) {
-                    const str_val = PyDecimal_AsString(obj) orelse return error.ConversionError;
-                    return Decimal{ .value = str_val };
-                } else if (py.PyLong_Check(obj) or py.PyFloat_Check(obj)) {
-                    // Also accept int/float - convert via str()
-                    const str_obj = py.PyObject_Str(obj) orelse return error.ConversionError;
-                    defer py.Py_DecRef(str_obj);
-                    var size: py.Py_ssize_t = 0;
-                    const ptr = py.PyUnicode_AsUTF8AndSize(str_obj, &size) orelse return error.ConversionError;
-                    return Decimal{ .value = ptr[0..@intCast(size)] };
-                }
-                return error.TypeError;
-            }
-
-            // Check if T is Path type
-            if (T == Path) {
-                if (py.PyUnicode_Check(obj)) {
-                    // Plain strings - the memory is owned by the input object
-                    var size: py.Py_ssize_t = 0;
-                    const ptr = py.PyUnicode_AsUTF8AndSize(obj, &size) orelse return error.ConversionError;
-                    return Path.init(ptr[0..@intCast(size)]);
-                } else if (py.PyPath_Check(obj)) {
-                    // pathlib.Path - need to get string with reference to keep memory alive
-                    const result = py.PyPath_AsStringWithRef(obj) orelse return error.ConversionError;
-                    return Path.fromPyObject(result.py_str, result.path);
-                }
-                return error.TypeError;
-            }
-
-            // Check if T is a DictView type
-            if (info == .@"struct" and @hasDecl(T, "py_dict") == false and @hasField(T, "py_dict")) {
-                if (!py.PyDict_Check(obj)) {
-                    return error.TypeError;
-                }
-                return T{ .py_dict = obj };
-            }
-
-            // Check if T is a ListView type
-            if (info == .@"struct" and @hasDecl(T, "py_list") == false and @hasField(T, "py_list")) {
-                if (!py.PyList_Check(obj)) {
-                    return error.TypeError;
-                }
-                return T{ .py_list = obj };
-            }
-
-            // Check if T is a SetView type
-            if (info == .@"struct" and @hasDecl(T, "py_set") == false and @hasField(T, "py_set")) {
-                if (!py.PyAnySet_Check(obj)) {
-                    return error.TypeError;
-                }
-                return T{ .py_set = obj };
-            }
-
-            // Check if T is an IteratorView type
-            if (info == .@"struct" and @hasDecl(T, "py_iter") == false and @hasField(T, "py_iter")) {
-                // Get an iterator from the object (works for any iterable)
-                const iter = py.PyObject_GetIter(obj) orelse {
-                    py.PyErr_SetString(py.PyExc_TypeError(), "Object is not iterable");
-                    return error.TypeError;
-                };
-                return T{ .py_iter = iter };
-            }
-
-            // Check if T is a BufferView or BufferViewMut type
-            if (info == .@"struct" and @hasDecl(T, "is_buffer_view") and T.is_buffer_view) {
-                const ElementType = T.ElementType;
-                const is_mutable = T.is_mutable;
-
-                // Check if object supports buffer protocol
-                if (!py.PyObject_CheckBuffer(obj)) {
-                    py.PyErr_SetString(py.PyExc_TypeError(), "Object does not support buffer protocol");
+            // Check struct types with markers
+            if (info == .@"struct") {
+                // Check if T is Complex type
+                if (@hasDecl(T, "_is_pyoz_complex")) {
+                    if (py.PyComplex_Check(obj)) {
+                        return T{
+                            .real = py.PyComplex_RealAsDouble(obj),
+                            .imag = py.PyComplex_ImagAsDouble(obj),
+                        };
+                    } else if (py.PyFloat_Check(obj)) {
+                        return T{
+                            .real = py.PyFloat_AsDouble(obj),
+                            .imag = 0.0,
+                        };
+                    } else if (py.PyLong_Check(obj)) {
+                        return T{
+                            .real = py.PyLong_AsDouble(obj),
+                            .imag = 0.0,
+                        };
+                    }
                     return error.TypeError;
                 }
 
-                var buffer: py.Py_buffer = std.mem.zeroes(py.Py_buffer);
-                const flags: c_int = if (is_mutable)
-                    py.PyBUF_WRITABLE | py.PyBUF_FORMAT | py.PyBUF_ND | py.PyBUF_STRIDES | py.PyBUF_ANY_CONTIGUOUS
-                else
-                    py.PyBUF_FORMAT | py.PyBUF_ND | py.PyBUF_STRIDES | py.PyBUF_ANY_CONTIGUOUS;
-
-                if (py.PyObject_GetBuffer(obj, &buffer, flags) < 0) {
+                // Check if T is DateTime type
+                if (@hasDecl(T, "_is_pyoz_datetime")) {
+                    if (py.PyDateTime_Check(obj)) {
+                        return T{
+                            .year = @intCast(py.PyDateTime_GET_YEAR(obj)),
+                            .month = @intCast(py.PyDateTime_GET_MONTH(obj)),
+                            .day = @intCast(py.PyDateTime_GET_DAY(obj)),
+                            .hour = @intCast(py.PyDateTime_DATE_GET_HOUR(obj)),
+                            .minute = @intCast(py.PyDateTime_DATE_GET_MINUTE(obj)),
+                            .second = @intCast(py.PyDateTime_DATE_GET_SECOND(obj)),
+                            .microsecond = @intCast(py.PyDateTime_DATE_GET_MICROSECOND(obj)),
+                        };
+                    }
                     return error.TypeError;
                 }
 
-                // Validate the format matches the expected element type
-                if (buffer.format) |fmt| {
-                    if (!checkBufferFormat(ElementType, fmt)) {
-                        py.PyBuffer_Release(&buffer);
-                        py.PyErr_SetString(py.PyExc_TypeError(), "Buffer format does not match expected type");
+                // Check if T is Date type
+                if (@hasDecl(T, "_is_pyoz_date")) {
+                    if (py.PyDate_Check(obj)) {
+                        return T{
+                            .year = @intCast(py.PyDateTime_GET_YEAR(obj)),
+                            .month = @intCast(py.PyDateTime_GET_MONTH(obj)),
+                            .day = @intCast(py.PyDateTime_GET_DAY(obj)),
+                        };
+                    }
+                    return error.TypeError;
+                }
+
+                // Check if T is Time type
+                if (@hasDecl(T, "_is_pyoz_time")) {
+                    if (py.PyTime_Check(obj)) {
+                        return T{
+                            .hour = @intCast(py.PyDateTime_TIME_GET_HOUR(obj)),
+                            .minute = @intCast(py.PyDateTime_TIME_GET_MINUTE(obj)),
+                            .second = @intCast(py.PyDateTime_TIME_GET_SECOND(obj)),
+                            .microsecond = @intCast(py.PyDateTime_TIME_GET_MICROSECOND(obj)),
+                        };
+                    }
+                    return error.TypeError;
+                }
+
+                // Check if T is TimeDelta type
+                if (@hasDecl(T, "_is_pyoz_timedelta")) {
+                    if (py.PyDelta_Check(obj)) {
+                        return T{
+                            .days = py.PyDateTime_DELTA_GET_DAYS(obj),
+                            .seconds = py.PyDateTime_DELTA_GET_SECONDS(obj),
+                            .microseconds = py.PyDateTime_DELTA_GET_MICROSECONDS(obj),
+                        };
+                    }
+                    return error.TypeError;
+                }
+
+                // Check if T is Bytes type
+                if (@hasDecl(T, "_is_pyoz_bytes")) {
+                    if (py.PyBytes_Check(obj)) {
+                        const size = py.PyBytes_Size(obj);
+                        const ptr = py.PyBytes_AsString(obj) orelse return error.ConversionError;
+                        return T{ .data = ptr[0..@intCast(size)] };
+                    } else if (py.PyByteArray_Check(obj)) {
+                        const size = py.PyByteArray_Size(obj);
+                        const ptr = py.PyByteArray_AsString(obj) orelse return error.ConversionError;
+                        return T{ .data = ptr[0..@intCast(size)] };
+                    }
+                    return error.TypeError;
+                }
+
+                // Check if T is ByteArray type
+                if (@hasDecl(T, "_is_pyoz_bytearray")) {
+                    if (py.PyByteArray_Check(obj)) {
+                        const size = py.PyByteArray_Size(obj);
+                        const ptr = py.PyByteArray_AsString(obj) orelse return error.ConversionError;
+                        return T{ .data = ptr[0..@intCast(size)] };
+                    }
+                    return error.TypeError;
+                }
+
+                // Check if T is Decimal type
+                if (@hasDecl(T, "_is_pyoz_decimal")) {
+                    if (PyDecimal_Check(obj)) {
+                        const str_val = PyDecimal_AsString(obj) orelse return error.ConversionError;
+                        return T{ .value = str_val };
+                    } else if (py.PyLong_Check(obj) or py.PyFloat_Check(obj)) {
+                        // Also accept int/float - convert via str()
+                        const str_obj = py.PyObject_Str(obj) orelse return error.ConversionError;
+                        defer py.Py_DecRef(str_obj);
+                        var size: py.Py_ssize_t = 0;
+                        const ptr = py.PyUnicode_AsUTF8AndSize(str_obj, &size) orelse return error.ConversionError;
+                        return T{ .value = ptr[0..@intCast(size)] };
+                    }
+                    return error.TypeError;
+                }
+
+                // Check if T is Path type
+                if (@hasDecl(T, "_is_pyoz_path")) {
+                    if (py.PyUnicode_Check(obj)) {
+                        // Plain strings - the memory is owned by the input object
+                        var size: py.Py_ssize_t = 0;
+                        const ptr = py.PyUnicode_AsUTF8AndSize(obj, &size) orelse return error.ConversionError;
+                        return T.init(ptr[0..@intCast(size)]);
+                    } else if (py.PyPath_Check(obj)) {
+                        // pathlib.Path - need to get string with reference to keep memory alive
+                        const result = py.PyPath_AsStringWithRef(obj) orelse return error.ConversionError;
+                        return T.fromPyObject(result.py_str, result.path);
+                    }
+                    return error.TypeError;
+                }
+
+                // Check if T is a DictView type
+                if (@hasDecl(T, "_is_pyoz_dict_view")) {
+                    if (!py.PyDict_Check(obj)) {
                         return error.TypeError;
                     }
+                    return T{ .py_dict = obj };
                 }
 
-                // Validate item size
-                if (buffer.itemsize != @sizeOf(ElementType)) {
-                    py.PyBuffer_Release(&buffer);
-                    py.PyErr_SetString(py.PyExc_TypeError(), "Buffer item size mismatch");
-                    return error.TypeError;
-                }
-
-                // Calculate total number of elements
-                var num_elements: usize = 1;
-                const ndim: usize = @intCast(buffer.ndim);
-                if (buffer.shape) |shape| {
-                    for (0..ndim) |i| {
-                        num_elements *= @intCast(shape[i]);
+                // Check if T is a ListView type
+                if (@hasDecl(T, "_is_pyoz_list_view")) {
+                    if (!py.PyList_Check(obj)) {
+                        return error.TypeError;
                     }
-                } else {
-                    num_elements = @intCast(@divExact(buffer.len, buffer.itemsize));
+                    return T{ .py_list = obj };
                 }
 
-                // Create the slice from the buffer
-                const ptr: [*]ElementType = @ptrCast(@alignCast(buffer.buf.?));
+                // Check if T is a SetView type
+                if (@hasDecl(T, "_is_pyoz_set_view")) {
+                    if (!py.PyAnySet_Check(obj)) {
+                        return error.TypeError;
+                    }
+                    return T{ .py_set = obj };
+                }
 
-                if (is_mutable) {
-                    return T{
-                        .data = ptr[0..num_elements],
-                        .ndim = ndim,
-                        .shape = if (buffer.shape) |s| s[0..ndim] else &[_]py.Py_ssize_t{@intCast(num_elements)},
-                        .strides = if (buffer.strides) |s| s[0..ndim] else null,
-                        ._py_obj = obj,
-                        ._buffer = buffer,
+                // Check if T is an IteratorView type
+                if (@hasDecl(T, "_is_pyoz_iterator_view")) {
+                    // Get an iterator from the object (works for any iterable)
+                    const iter = py.PyObject_GetIter(obj) orelse {
+                        py.PyErr_SetString(py.PyExc_TypeError(), "Object is not iterable");
+                        return error.TypeError;
                     };
-                } else {
-                    return T{
-                        .data = ptr[0..num_elements],
-                        .ndim = ndim,
-                        .shape = if (buffer.shape) |s| s[0..ndim] else &[_]py.Py_ssize_t{@intCast(num_elements)},
-                        .strides = if (buffer.strides) |s| s[0..ndim] else null,
-                        ._py_obj = obj,
-                        ._buffer = buffer,
-                    };
+                    return T{ .py_iter = iter };
+                }
+
+                // Check if T is a BufferView or BufferViewMut type
+                if (@hasDecl(T, "_is_pyoz_buffer") or @hasDecl(T, "_is_pyoz_buffer_mut")) {
+                    const ElementType = T.ElementType;
+                    const is_mutable = @hasDecl(T, "_is_pyoz_buffer_mut");
+
+                    // Check if object supports buffer protocol
+                    if (!py.PyObject_CheckBuffer(obj)) {
+                        py.PyErr_SetString(py.PyExc_TypeError(), "Object does not support buffer protocol");
+                        return error.TypeError;
+                    }
+
+                    var buffer: py.Py_buffer = std.mem.zeroes(py.Py_buffer);
+                    const flags: c_int = if (is_mutable)
+                        py.PyBUF_WRITABLE | py.PyBUF_FORMAT | py.PyBUF_ND | py.PyBUF_STRIDES | py.PyBUF_ANY_CONTIGUOUS
+                    else
+                        py.PyBUF_FORMAT | py.PyBUF_ND | py.PyBUF_STRIDES | py.PyBUF_ANY_CONTIGUOUS;
+
+                    if (py.PyObject_GetBuffer(obj, &buffer, flags) < 0) {
+                        return error.TypeError;
+                    }
+
+                    // Validate the format matches the expected element type
+                    if (buffer.format) |fmt| {
+                        if (!checkBufferFormat(ElementType, fmt)) {
+                            py.PyBuffer_Release(&buffer);
+                            py.PyErr_SetString(py.PyExc_TypeError(), "Buffer format does not match expected type");
+                            return error.TypeError;
+                        }
+                    }
+
+                    // Validate item size
+                    if (buffer.itemsize != @sizeOf(ElementType)) {
+                        py.PyBuffer_Release(&buffer);
+                        py.PyErr_SetString(py.PyExc_TypeError(), "Buffer item size mismatch");
+                        return error.TypeError;
+                    }
+
+                    // Calculate total number of elements
+                    var num_elements: usize = 1;
+                    const ndim: usize = @intCast(buffer.ndim);
+                    if (buffer.shape) |shape| {
+                        for (0..ndim) |i| {
+                            num_elements *= @intCast(shape[i]);
+                        }
+                    } else {
+                        num_elements = @intCast(@divExact(buffer.len, buffer.itemsize));
+                    }
+
+                    // Create the slice from the buffer
+                    const ptr: [*]ElementType = @ptrCast(@alignCast(buffer.buf.?));
+
+                    if (is_mutable) {
+                        return T{
+                            .data = ptr[0..num_elements],
+                            .ndim = ndim,
+                            .shape = if (buffer.shape) |s| s[0..ndim] else &[_]py.Py_ssize_t{@intCast(num_elements)},
+                            .strides = if (buffer.strides) |s| s[0..ndim] else null,
+                            ._py_obj = obj,
+                            ._buffer = buffer,
+                        };
+                    } else {
+                        return T{
+                            .data = ptr[0..num_elements],
+                            .ndim = ndim,
+                            .shape = if (buffer.shape) |s| s[0..ndim] else &[_]py.Py_ssize_t{@intCast(num_elements)},
+                            .strides = if (buffer.strides) |s| s[0..ndim] else null,
+                            ._py_obj = obj,
+                            ._buffer = buffer,
+                        };
+                    }
                 }
             }
 

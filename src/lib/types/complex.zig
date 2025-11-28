@@ -7,7 +7,7 @@
 /// Return this from your __complex__ method to convert to Python complex
 /// Also usable with BufferView(Complex) for numpy complex128 arrays
 pub const Complex = struct {
-    const _is_pyoz_complex = true;
+    pub const _is_pyoz_complex = true;
 
     real: f64,
     imag: f64,
@@ -43,7 +43,7 @@ pub const Complex = struct {
 /// A 32-bit complex number type (complex64 - two f32s)
 /// Usable with BufferView(Complex32) for numpy complex64 arrays
 pub const Complex32 = struct {
-    const _is_pyoz_complex = true;
+    pub const _is_pyoz_complex = true;
 
     real: f32,
     imag: f32,

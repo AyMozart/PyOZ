@@ -20,7 +20,7 @@ pub fn ListView(comptime T: type) type {
 /// ListView with explicit converter type - used internally
 pub fn ListViewWithConverter(comptime T: type, comptime Conv: type) type {
     return struct {
-        const _is_pyoz_list = true;
+        pub const _is_pyoz_list_view = true;
 
         py_list: *PyObject,
 

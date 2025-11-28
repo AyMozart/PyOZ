@@ -359,6 +359,85 @@ fn iter_average(items: pyoz.IteratorView(f64)) ?f64 {
 }
 
 // ============================================================================
+// Iterator producer examples - Return iterators to Python
+// ============================================================================
+
+/// Return a fixed list of numbers using Iterator (eager, becomes a Python list)
+fn get_fibonacci() pyoz.Iterator(i64) {
+    const fibs = [_]i64{ 1, 1, 2, 3, 5, 8, 13, 21, 34, 55 };
+    return .{ .items = &fibs };
+}
+
+/// Return squares of 1-5 using Iterator
+fn get_squares() pyoz.Iterator(i64) {
+    const squares = [_]i64{ 1, 4, 9, 16, 25 };
+    return .{ .items = &squares };
+}
+
+/// State for the range lazy iterator
+const RangeState = struct {
+    current: i64,
+    end: i64,
+    step: i64,
+
+    pub fn next(self: *@This()) ?i64 {
+        if ((self.step > 0 and self.current >= self.end) or
+            (self.step < 0 and self.current <= self.end))
+        {
+            return null;
+        }
+        const val = self.current;
+        self.current += self.step;
+        return val;
+    }
+};
+
+/// Return a lazy range iterator (like Python's range())
+fn lazy_range(start: i64, end: i64, step: i64) pyoz.LazyIterator(i64, RangeState) {
+    return .{ .state = .{ .current = start, .end = end, .step = step } };
+}
+
+/// State for counting iterator
+const CountState = struct {
+    current: i64,
+    limit: i64,
+
+    pub fn next(self: *@This()) ?i64 {
+        if (self.current >= self.limit) return null;
+        const val = self.current;
+        self.current += 1;
+        return val;
+    }
+};
+
+/// Return a lazy counter that counts from 0 to n-1
+fn lazy_count(n: i64) pyoz.LazyIterator(i64, CountState) {
+    return .{ .state = .{ .current = 0, .limit = n } };
+}
+
+/// State for fibonacci generator
+const FibState = struct {
+    a: i64,
+    b: i64,
+    remaining: i64,
+
+    pub fn next(self: *@This()) ?i64 {
+        if (self.remaining <= 0) return null;
+        const val = self.a;
+        const new_b = self.a + self.b;
+        self.a = self.b;
+        self.b = new_b;
+        self.remaining -= 1;
+        return val;
+    }
+};
+
+/// Return a lazy fibonacci generator that yields n fibonacci numbers
+fn lazy_fibonacci(n: i64) pyoz.LazyIterator(i64, FibState) {
+    return .{ .state = .{ .a = 0, .b = 1, .remaining = n } };
+}
+
+// ============================================================================
 // DateTime examples
 // ============================================================================
 
@@ -2486,6 +2565,12 @@ const Example = pyoz.module(.{
         pyoz.func("iter_product", iter_product, "Calculate product of integers in any iterable"),
         pyoz.func("iter_join", iter_join, "Join strings from any iterable"),
         pyoz.func("iter_average", iter_average, "Calculate average of floats from any iterable"),
+        // Iterator producer functions - return iterators to Python
+        pyoz.func("get_fibonacci", get_fibonacci, "Return first 10 fibonacci numbers (eager, as list)"),
+        pyoz.func("get_squares", get_squares, "Return squares of 1-5 (eager, as list)"),
+        pyoz.func("lazy_range", lazy_range, "Return a lazy range iterator (like Python's range)"),
+        pyoz.func("lazy_count", lazy_count, "Return a lazy counter from 0 to n-1"),
+        pyoz.func("lazy_fibonacci", lazy_fibonacci, "Return a lazy fibonacci generator"),
         // DateTime functions
         pyoz.func("datetime_parts", datetime_parts, "Get datetime components as tuple"),
         pyoz.func("date_parts", date_parts, "Get date components as tuple"),

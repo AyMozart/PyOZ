@@ -19,6 +19,8 @@ pub fn DictView(comptime K: type, comptime V: type) type {
 /// DictView with explicit converter type - used internally
 pub fn DictViewWithConverter(comptime K: type, comptime V: type, comptime Conv: type) type {
     return struct {
+        pub const _is_pyoz_dict_view = true;
+
         py_dict: *PyObject,
 
         const Self = @This();
@@ -98,6 +100,8 @@ pub fn DictViewWithConverter(comptime K: type, comptime V: type, comptime Conv: 
 /// Usage: fn myFunc() Dict([]const u8, i64) { ... }
 pub fn Dict(comptime K: type, comptime V: type) type {
     return struct {
+        pub const _is_pyoz_dict = true;
+
         entries: []const Entry,
 
         pub const Entry = struct {

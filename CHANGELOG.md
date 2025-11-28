@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`Iterator(T)` producer type** - Return Python lists from Zig slices
+  - Eager evaluation: converts slice to Python list immediately
+  - Use for small, known data sets
+  ```zig
+  fn get_fibonacci() pyoz.Iterator(i64) {
+      const fibs = [_]i64{ 1, 1, 2, 3, 5, 8, 13, 21, 34, 55 };
+      return .{ .items = &fibs };
+  }
+  ```
+
+- **`LazyIterator(T, State)` producer type** - Return lazy Python iterators
+  - Generates values on-demand, memory efficient for large/infinite sequences
+  - State struct must implement `pub fn next(self: *@This()) ?T`
+  ```zig
+  const RangeState = struct {
+      current: i64, end: i64, step: i64,
+      pub fn next(self: *@This()) ?i64 {
+          if (self.current >= self.end) return null;
+          const val = self.current;
+          self.current += self.step;
+          return val;
+      }
+  };
+  fn lazy_range(start: i64, end: i64, step: i64) pyoz.LazyIterator(i64, RangeState) {
+      return .{ .state = .{ .current = start, .end = end, .step = step } };
+  }
+  ```
+
+- **`ByteArray` producer support** - Return Python `bytearray` from Zig
+  - Previously `ByteArray` was consumer-only (could only receive from Python)
+  - Now supports bidirectional conversion
+
+### Changed
+- **Type markers are now `pub const`** - All internal type markers (`_is_pyoz_*`) are now public
+  - Fixes cross-module `@hasDecl` detection which requires public declarations
+  - Affected types: `Set`, `FrozenSet`, `Dict`, `Iterator`, `LazyIterator`, `ListView`, `DictView`, `SetView`, `IteratorView`, `BufferView`, `BufferViewMut`, `Complex`, `DateTime`, `Date`, `Time`, `TimeDelta`, `Bytes`, `ByteArray`, `Path`, `Decimal`
+
+- **View types now use distinct markers** - Consumer (View) types have separate markers from producer types
+  - `_is_pyoz_set_view` vs `_is_pyoz_set`
+  - `_is_pyoz_dict_view` vs `_is_pyoz_dict`
+  - `_is_pyoz_list_view` (no producer equivalent, use slices)
+  - `_is_pyoz_iterator_view` vs `_is_pyoz_iterator`
+  - `_is_pyoz_buffer` vs `_is_pyoz_buffer_mut`
+
+- **`conversion.zig` refactored to use markers consistently**
+  - All type detection now uses `@hasDecl(T, "_is_pyoz_*")` instead of direct type comparison
+  - Improves extensibility and consistency across the codebase
+
+- **`stubs.zig` updated for new types**
+  - `Iterator(T)` generates `list[T]` type hint (eager, returns list)
+  - `LazyIterator(T, State)` generates `Iterator[T]` type hint (lazy iterator)
+  - `Dict(K, V)` producer now properly detected via `_is_pyoz_dict` marker
+  - `BufferViewMut(T)` now properly detected via `_is_pyoz_buffer_mut` marker
+  - Added `Iterator` to typing imports for lazy iterator support
+
+### Documentation
+- **Types guide updated** - Added Iterator vs LazyIterator section with usage examples
+- **View type asymmetry explained** - Documented why Views are consumer-only
+
 ## [0.6.0] - 2025-11-28
 
 ### Fixed
