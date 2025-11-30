@@ -5,16 +5,18 @@
 const std = @import("std");
 const py = @import("../python.zig");
 const conversion = @import("../conversion.zig");
+const abi = @import("../abi.zig");
 
 fn getConversions() type {
     return conversion.Conversions;
 }
 
 /// Build lifecycle functions for a given type
+/// In ABI3 mode, type_object_ptr is not used (we get the type from heap_type at runtime)
 pub fn LifecycleBuilder(
     comptime T: type,
     comptime PyWrapper: type,
-    comptime type_object_ptr: *py.PyTypeObject,
+    comptime type_object_ptr: if (abi.abi3_enabled) ?*anyopaque else *py.PyTypeObject,
     comptime has_dict_support: bool,
     comptime has_weakref_support: bool,
     comptime is_builtin_subclass: bool,
@@ -130,8 +132,6 @@ pub fn LifecycleBuilder(
             const self: *PyWrapper = @ptrCast(@alignCast(obj));
 
             const obj_type = py.Py_TYPE(obj);
-            const tp: ?*py.PyTypeObject = obj_type;
-            const is_heaptype = if (tp) |t| (t.tp_flags & py.Py_TPFLAGS_HEAPTYPE) != 0 else false;
 
             if (has_weakref_support) {
                 if (self.getWeakRefList()) |_| {
@@ -146,19 +146,33 @@ pub fn LifecycleBuilder(
                 }
             }
 
-            if (obj_type) |t| {
-                if (t.tp_free) |free_fn| {
-                    free_fn(self_obj);
+            // In ABI3 mode, PyTypeObject is opaque so we can't access tp_flags or tp_free
+            // All types created via PyType_FromSpec are heap types
+            if (comptime abi.abi3_enabled) {
+                // Free the object
+                py.PyObject_Del(self_obj);
+                // Decref the type (heap types need this)
+                if (obj_type) |t| {
+                    py.Py_DecRef(@ptrCast(@alignCast(t)));
+                }
+            } else {
+                const tp: ?*py.PyTypeObject = obj_type;
+                const is_heaptype = if (tp) |t| (t.tp_flags & py.Py_TPFLAGS_HEAPTYPE) != 0 else false;
+
+                if (obj_type) |t| {
+                    if (t.tp_free) |free_fn| {
+                        free_fn(self_obj);
+                    } else {
+                        py.PyObject_Del(self_obj);
+                    }
                 } else {
                     py.PyObject_Del(self_obj);
                 }
-            } else {
-                py.PyObject_Del(self_obj);
-            }
 
-            if (is_heaptype) {
-                if (tp) |t| {
-                    py.Py_DecRef(@ptrCast(t));
+                if (is_heaptype) {
+                    if (tp) |t| {
+                        py.Py_DecRef(@ptrCast(t));
+                    }
                 }
             }
         }
@@ -167,8 +181,13 @@ pub fn LifecycleBuilder(
         pub const is_builtin = is_builtin_subclass;
 
         // Reference to type object for other modules
+        // Note: In ABI3 mode, this will panic - use Parent.getType() instead
         pub fn getTypeObject() *py.PyTypeObject {
-            return type_object_ptr;
+            if (comptime abi.abi3_enabled) {
+                @panic("getTypeObject not available in ABI3 mode - use Parent.getType() instead");
+            } else {
+                return type_object_ptr;
+            }
         }
     };
 }

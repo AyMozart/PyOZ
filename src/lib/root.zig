@@ -52,6 +52,7 @@ pub const class_mod = @import("class.zig");
 pub const module_mod = @import("module.zig");
 pub const stubs_mod = @import("stubs.zig");
 pub const version = @import("version");
+pub const abi = @import("abi.zig");
 
 // =============================================================================
 // Python C API types (re-exported for convenience)
@@ -256,7 +257,9 @@ pub const kwfunc_named = wrappers_mod.kwfunc_named;
 /// Class definition for the module
 pub const ClassDef = struct {
     name: [*:0]const u8,
-    type_obj: *PyTypeObject,
+    // In ABI3 mode, type_obj is null - we get it from initType() at runtime
+    // In non-ABI3 mode, type_obj points to the static type object
+    type_obj: if (abi.abi3_enabled) ?*PyTypeObject else *PyTypeObject,
     zig_type: type,
 };
 
@@ -264,7 +267,7 @@ pub const ClassDef = struct {
 pub fn class(comptime name: [*:0]const u8, comptime T: type) ClassDef {
     return .{
         .name = name,
-        .type_obj = &class_mod.getWrapper(T).type_object,
+        .type_obj = if (comptime abi.abi3_enabled) null else &class_mod.getWrapper(T).type_object,
         .zig_type = T,
     };
 }
@@ -556,36 +559,60 @@ pub fn module(comptime config: anytype) type {
 
             // Add classes to the module
             inline for (classes) |cls| {
-                // Initialize base type at runtime (required on Windows for DLL imports)
-                class_mod.getWrapper(cls.zig_type).initBase();
+                const Wrapper = class_mod.getWrapper(cls.zig_type);
 
-                // Ready the type first
-                if (py.PyType_Ready(cls.type_obj) < 0) {
+                // Initialize type (ABI3: PyType_FromSpec, non-ABI3: PyType_Ready)
+                const type_obj = Wrapper.initType() orelse {
                     py.Py_DecRef(mod);
                     return null;
-                }
+                };
 
                 // Add __slots__ tuple with field names to the type's __dict__
-                const slots_tuple = class_mod.createSlotsTuple(cls.zig_type);
-                if (slots_tuple) |st| {
-                    const type_dict = cls.type_obj.tp_dict;
-                    if (type_dict) |dict| {
-                        _ = py.PyDict_SetItemString(dict, "__slots__", st);
+                // Note: tp_dict access may not work reliably in ABI3 for heap types
+                if (!abi.abi3_enabled) {
+                    const slots_tuple = class_mod.createSlotsTuple(cls.zig_type);
+                    if (slots_tuple) |st| {
+                        const type_dict = type_obj.tp_dict;
+                        if (type_dict) |dict| {
+                            _ = py.PyDict_SetItemString(dict, "__slots__", st);
+                        }
+                        py.Py_DecRef(st);
                     }
-                    py.Py_DecRef(st);
-                }
 
-                // Add class attributes (classattr_NAME declarations)
-                if (cls.type_obj.tp_dict) |type_dict| {
-                    if (!class_mod.addClassAttributes(cls.zig_type, type_dict)) {
+                    // Add class attributes (classattr_NAME declarations)
+                    if (type_obj.tp_dict) |type_dict| {
+                        if (!class_mod.addClassAttributes(cls.zig_type, type_dict)) {
+                            py.Py_DecRef(mod);
+                            return null;
+                        }
+                    }
+                } else {
+                    // In ABI3 mode, use PyObject_SetAttrString to set class attributes
+                    // since tp_dict is not accessible
+                    const type_as_obj: *py.PyObject = @ptrCast(@alignCast(type_obj));
+                    if (!class_mod.addClassAttributesAbi3(cls.zig_type, type_as_obj)) {
                         py.Py_DecRef(mod);
                         return null;
                     }
                 }
 
-                if (py.PyModule_AddType(mod, cls.type_obj) < 0) {
-                    py.Py_DecRef(mod);
-                    return null;
+                // Add type to module
+                // In ABI3 mode, use PyModule_AddObject with the known name
+                // since PyModule_AddType may not be available
+                if (comptime abi.abi3_enabled) {
+                    // PyModule_AddObject steals reference on success
+                    const type_as_obj: *py.PyObject = @ptrCast(@alignCast(type_obj));
+                    py.Py_IncRef(type_as_obj);
+                    if (py.c.PyModule_AddObject(mod, cls.name, type_as_obj) < 0) {
+                        py.Py_DecRef(type_as_obj);
+                        py.Py_DecRef(mod);
+                        return null;
+                    }
+                } else {
+                    if (py.PyModule_AddType(mod, type_obj) < 0) {
+                        py.Py_DecRef(mod);
+                        return null;
+                    }
                 }
             }
 

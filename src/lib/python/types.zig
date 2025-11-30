@@ -1,15 +1,33 @@
 //! Core Python C API types
 //!
 //! Re-exports essential types from the Python C API.
+//! When ABI3 mode is enabled, defines Py_LIMITED_API to restrict to Stable ABI.
 
 const std = @import("std");
+const build_options = @import("build_options");
+
+// ABI3 configuration - hardcoded to Python 3.8 minimum
+pub const abi3_enabled = build_options.abi3;
+pub const abi3_version = "3.8";
+pub const abi3_version_hex = 0x03080000;
 
 // Import Python C API from system headers
+// In ABI3 mode, we define Py_LIMITED_API and exclude non-stable headers
 pub const c = @cImport({
     @cDefine("PY_SSIZE_T_CLEAN", "1");
+
+    // Define Py_LIMITED_API for Python 3.8 minimum
+    if (abi3_enabled) {
+        @cDefine("Py_LIMITED_API", "0x03080000");
+    }
+
     @cInclude("Python.h");
-    @cInclude("datetime.h");
-    @cInclude("structmember.h");
+
+    // datetime.h and structmember.h are NOT part of the Stable ABI
+    if (!abi3_enabled) {
+        @cInclude("datetime.h");
+        @cInclude("structmember.h");
+    }
 });
 
 // ============================================================================

@@ -83,6 +83,7 @@ pub fn AttributeProtocol(comptime T: type, comptime Parent: type, comptime name:
                     if (set_params.len >= 3) {
                         const ValueType = set_params[2].type.?;
                         if (ValueType == ?*py.PyObject or ValueType == *py.PyObject) {
+                            // Raw PyObject - pass directly
                             if (@typeInfo(RetType) == .error_union) {
                                 T.__setattr__(self.getData(), attr_name, value) catch |err| {
                                     const msg = @errorName(err);
@@ -91,6 +92,22 @@ pub fn AttributeProtocol(comptime T: type, comptime Parent: type, comptime name:
                                 };
                             } else {
                                 T.__setattr__(self.getData(), attr_name, value);
+                            }
+                            return 0;
+                        } else {
+                            // Convert Python object to Zig type
+                            const zig_value = getConversions().fromPy(ValueType, value) catch {
+                                py.PyErr_SetString(py.PyExc_TypeError(), "cannot convert value to expected type");
+                                return -1;
+                            };
+                            if (@typeInfo(RetType) == .error_union) {
+                                T.__setattr__(self.getData(), attr_name, zig_value) catch |err| {
+                                    const msg = @errorName(err);
+                                    py.PyErr_SetString(py.PyExc_AttributeError(), msg.ptr);
+                                    return -1;
+                                };
+                            } else {
+                                T.__setattr__(self.getData(), attr_name, zig_value);
                             }
                             return 0;
                         }
@@ -123,7 +140,7 @@ pub fn AttributeProtocol(comptime T: type, comptime Parent: type, comptime name:
             _ = value_obj;
 
             var size: py.Py_ssize_t = 0;
-            const attr_name_ptr: ?[*]const u8 = @ptrCast(py.c.PyUnicode_AsUTF8AndSize(name_obj, &size));
+            const attr_name_ptr: ?[*]const u8 = py.PyUnicode_AsUTF8AndSize(name_obj.?, &size);
 
             if (attr_name_ptr) |attr_name| {
                 var buf: [256]u8 = undefined;

@@ -48,12 +48,18 @@ pub fn buildWheel(allocator: std.mem.Allocator, release: bool, generate_stubs: b
     // Format: {distribution}-{version}-{python}-{abi}-{platform}.whl
     const platform_tag = try getPlatformTag(allocator, config.getLinuxPlatformTag());
     defer if (builtin.os.tag == .macos) allocator.free(platform_tag);
-    const python_tag = try std.fmt.allocPrint(allocator, "cp{d}{d}", .{ python.version_major, python.version_minor });
-    defer allocator.free(python_tag);
 
-    // Use CPython ABI tag (e.g., cp312 for Python 3.12)
-    // Note: abi3 would require building with Py_LIMITED_API which we don't currently support
-    const abi_tag = python_tag;
+    // For ABI3 wheels, use hardcoded Python 3.8 minimum
+    // Format: cp38-abi3-{platform}
+    // For non-ABI3, use current Python version: cpXY-cpXY-{platform}
+    const python_tag = if (config.getAbi3())
+        "cp38" // ABI3 hardcoded to Python 3.8
+    else
+        try std.fmt.allocPrint(allocator, "cp{d}{d}", .{ python.version_major, python.version_minor });
+    defer if (!config.getAbi3()) allocator.free(python_tag);
+
+    // ABI tag: "abi3" for ABI3 mode, same as python_tag for non-ABI3
+    const abi_tag: []const u8 = if (config.getAbi3()) "abi3" else python_tag;
 
     const wheel_filename = try std.fmt.allocPrint(
         allocator,
@@ -128,15 +134,28 @@ fn createWheelZip(
     const dist_info_name = try std.fmt.allocPrint(allocator, "{s}-{s}.dist-info", .{ config.name, config.getVersion() });
     defer allocator.free(dist_info_name);
 
-    // Create WHEEL file content
-    // Use CPython ABI tag (cpXY-cpXY) not abi3 since we don't use Py_LIMITED_API
-    const wheel_content = try std.fmt.allocPrint(allocator,
-        \\Wheel-Version: 1.0
-        \\Generator: pyoz
-        \\Root-Is-Purelib: false
-        \\Tag: cp{d}{d}-cp{d}{d}-{s}
-        \\
-    , .{ python.version_major, python.version_minor, python.version_major, python.version_minor, try getPlatformTag(allocator, config.getLinuxPlatformTag()) });
+    // Create WHEEL file content with appropriate tag based on ABI3 mode
+    const platform_tag = try getPlatformTag(allocator, config.getLinuxPlatformTag());
+    defer if (builtin.os.tag == .macos) allocator.free(platform_tag);
+
+    const wheel_content = if (config.getAbi3())
+        // ABI3 mode: hardcoded cp38-abi3 tag
+        try std.fmt.allocPrint(allocator,
+            \\Wheel-Version: 1.0
+            \\Generator: pyoz
+            \\Root-Is-Purelib: false
+            \\Tag: cp38-abi3-{s}
+            \\
+        , .{platform_tag})
+    else
+        // Non-ABI3 mode: use cpXY-cpXY tag format
+        try std.fmt.allocPrint(allocator,
+            \\Wheel-Version: 1.0
+            \\Generator: pyoz
+            \\Root-Is-Purelib: false
+            \\Tag: cp{d}{d}-cp{d}{d}-{s}
+            \\
+        , .{ python.version_major, python.version_minor, python.version_major, python.version_minor, platform_tag });
     defer allocator.free(wheel_content);
 
     const wheel_file_path = try std.fmt.allocPrint(allocator, "{s}/WHEEL", .{dist_info_name});

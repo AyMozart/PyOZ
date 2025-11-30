@@ -5,6 +5,7 @@
 const std = @import("std");
 const py = @import("../python.zig");
 const conversion = @import("../conversion.zig");
+const slots = py.slots;
 
 fn getConversions() type {
     return conversion.Conversions;
@@ -116,6 +117,45 @@ pub fn SequenceProtocol(comptime T: type, comptime Parent: type) type {
                 }
                 return 0;
             }
+        }
+
+        // ====================================================================
+        // ABI3 Slot Building
+        // ====================================================================
+
+        /// Count how many sequence protocol slots this type needs
+        pub fn slotCount() usize {
+            var count: usize = 0;
+            if (@hasDecl(T, "__len__")) count += 1;
+            if (@hasDecl(T, "__getitem__")) count += 1;
+            if (@hasDecl(T, "__setitem__") or @hasDecl(T, "__delitem__")) count += 1;
+            if (@hasDecl(T, "__contains__")) count += 1;
+            return count;
+        }
+
+        /// Add sequence protocol slots to a slot array
+        /// Returns the number of slots added
+        pub fn addSlots(slot_array: []py.PyType_Slot, start_idx: usize) usize {
+            var idx = start_idx;
+
+            if (@hasDecl(T, "__len__")) {
+                slot_array[idx] = .{ .slot = slots.sq_length, .pfunc = @ptrCast(@constCast(&py_sq_length)) };
+                idx += 1;
+            }
+            if (@hasDecl(T, "__getitem__")) {
+                slot_array[idx] = .{ .slot = slots.sq_item, .pfunc = @ptrCast(@constCast(&py_sq_item)) };
+                idx += 1;
+            }
+            if (@hasDecl(T, "__setitem__") or @hasDecl(T, "__delitem__")) {
+                slot_array[idx] = .{ .slot = slots.sq_ass_item, .pfunc = @ptrCast(@constCast(&py_sq_ass_item)) };
+                idx += 1;
+            }
+            if (@hasDecl(T, "__contains__")) {
+                slot_array[idx] = .{ .slot = slots.sq_contains, .pfunc = @ptrCast(@constCast(&py_sq_contains)) };
+                idx += 1;
+            }
+
+            return idx - start_idx;
         }
     };
 }

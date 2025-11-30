@@ -38,6 +38,9 @@ pub const BufferView = buffer_types.BufferView;
 pub const BufferViewMut = buffer_types.BufferViewMut;
 pub const BufferInfo = buffer_types.BufferInfo;
 const checkBufferFormat = buffer_types.checkBufferFormat;
+const checkBufferFormatAbi3 = buffer_types.checkBufferFormatAbi3;
+
+const abi3_enabled = py.types.abi3_enabled;
 
 const iterator_types = @import("collections/iterator.zig");
 const LazyIteratorWrapper = iterator_types.LazyIteratorWrapper;
@@ -294,8 +297,8 @@ pub fn Converter(comptime class_types: []const type) type {
                     inline for (class_types) |ClassType| {
                         if (T == ClassType) {
                             const Wrapper = class_mod.getWrapper(ClassType);
-                            // Allocate a new Python object
-                            const py_obj = py.PyObject_New(Wrapper.PyWrapper, &Wrapper.type_object) orelse return null;
+                            // Allocate a new Python object - use getType() which works in both ABI3 and non-ABI3 modes
+                            const py_obj = py.PyObject_New(Wrapper.PyWrapper, Wrapper.getType()) orelse return null;
                             // Copy the data
                             py_obj.getData().* = value;
                             return @ptrCast(py_obj);
@@ -517,70 +520,85 @@ pub fn Converter(comptime class_types: []const type) type {
                     const ElementType = T.ElementType;
                     const is_mutable = @hasDecl(T, "_is_pyoz_buffer_mut");
 
-                    // Check if object supports buffer protocol
-                    if (!py.PyObject_CheckBuffer(obj)) {
-                        py.PyErr_SetString(py.PyExc_TypeError(), "Object does not support buffer protocol");
-                        return error.TypeError;
-                    }
+                    if (abi3_enabled) {
+                        // ABI3 mode: use memoryview + tobytes() for copy-based access
+                        // BufferViewMut is not supported in ABI3 (compile error in types/buffer.zig)
+                        if (is_mutable) {
+                            @compileError("BufferViewMut is not available in ABI3 mode");
+                        }
 
-                    var buffer: py.Py_buffer = std.mem.zeroes(py.Py_buffer);
-                    const flags: c_int = if (is_mutable)
-                        py.PyBUF_WRITABLE | py.PyBUF_FORMAT | py.PyBUF_ND | py.PyBUF_STRIDES | py.PyBUF_ANY_CONTIGUOUS
-                    else
-                        py.PyBUF_FORMAT | py.PyBUF_ND | py.PyBUF_STRIDES | py.PyBUF_ANY_CONTIGUOUS;
-
-                    if (py.PyObject_GetBuffer(obj, &buffer, flags) < 0) {
-                        return error.TypeError;
-                    }
-
-                    // Validate the format matches the expected element type
-                    if (buffer.format) |fmt| {
-                        if (!checkBufferFormat(ElementType, fmt)) {
-                            py.PyBuffer_Release(&buffer);
-                            py.PyErr_SetString(py.PyExc_TypeError(), "Buffer format does not match expected type");
+                        return convertBufferAbi3(T, ElementType, obj) catch |err| {
+                            return err;
+                        };
+                    } else {
+                        // Non-ABI3 mode: zero-copy via PyObject_GetBuffer
+                        // Check if object supports buffer protocol
+                        if (!py.PyObject_CheckBuffer(obj)) {
+                            py.PyErr_SetString(py.PyExc_TypeError(), "Object does not support buffer protocol");
                             return error.TypeError;
                         }
-                    }
 
-                    // Validate item size
-                    if (buffer.itemsize != @sizeOf(ElementType)) {
-                        py.PyBuffer_Release(&buffer);
-                        py.PyErr_SetString(py.PyExc_TypeError(), "Buffer item size mismatch");
-                        return error.TypeError;
-                    }
+                        var buffer: py.Py_buffer = std.mem.zeroes(py.Py_buffer);
+                        const flags: c_int = if (is_mutable)
+                            py.PyBUF_WRITABLE | py.PyBUF_FORMAT | py.PyBUF_ND | py.PyBUF_STRIDES | py.PyBUF_ANY_CONTIGUOUS
+                        else
+                            py.PyBUF_FORMAT | py.PyBUF_ND | py.PyBUF_STRIDES | py.PyBUF_ANY_CONTIGUOUS;
 
-                    // Calculate total number of elements
-                    var num_elements: usize = 1;
-                    const ndim: usize = @intCast(buffer.ndim);
-                    if (buffer.shape) |shape| {
-                        for (0..ndim) |i| {
-                            num_elements *= @intCast(shape[i]);
+                        if (py.PyObject_GetBuffer(obj, &buffer, flags) < 0) {
+                            return error.TypeError;
                         }
-                    } else {
-                        num_elements = @intCast(@divExact(buffer.len, buffer.itemsize));
-                    }
 
-                    // Create the slice from the buffer
-                    const ptr: [*]ElementType = @ptrCast(@alignCast(buffer.buf.?));
+                        // Validate the format matches the expected element type
+                        if (buffer.format) |fmt| {
+                            if (!checkBufferFormat(ElementType, fmt)) {
+                                py.PyBuffer_Release(&buffer);
+                                py.PyErr_SetString(py.PyExc_TypeError(), "Buffer format does not match expected type");
+                                return error.TypeError;
+                            }
+                        }
 
-                    if (is_mutable) {
-                        return T{
-                            .data = ptr[0..num_elements],
-                            .ndim = ndim,
-                            .shape = if (buffer.shape) |s| s[0..ndim] else &[_]py.Py_ssize_t{@intCast(num_elements)},
-                            .strides = if (buffer.strides) |s| s[0..ndim] else null,
-                            ._py_obj = obj,
-                            ._buffer = buffer,
-                        };
-                    } else {
-                        return T{
-                            .data = ptr[0..num_elements],
-                            .ndim = ndim,
-                            .shape = if (buffer.shape) |s| s[0..ndim] else &[_]py.Py_ssize_t{@intCast(num_elements)},
-                            .strides = if (buffer.strides) |s| s[0..ndim] else null,
-                            ._py_obj = obj,
-                            ._buffer = buffer,
-                        };
+                        // Validate item size
+                        if (buffer.itemsize != @sizeOf(ElementType)) {
+                            py.PyBuffer_Release(&buffer);
+                            py.PyErr_SetString(py.PyExc_TypeError(), "Buffer item size mismatch");
+                            return error.TypeError;
+                        }
+
+                        // Calculate total number of elements
+                        var num_elements: usize = 1;
+                        const ndim: usize = @intCast(buffer.ndim);
+                        if (buffer.shape) |shape| {
+                            for (0..ndim) |i| {
+                                num_elements *= @intCast(shape[i]);
+                            }
+                        } else {
+                            num_elements = @intCast(@divExact(buffer.len, buffer.itemsize));
+                        }
+
+                        // Create the slice from the buffer
+                        const ptr: [*]ElementType = @ptrCast(@alignCast(buffer.buf.?));
+
+                        if (is_mutable) {
+                            return T{
+                                .data = ptr[0..num_elements],
+                                .ndim = ndim,
+                                .shape = if (buffer.shape) |s| s[0..ndim] else &[_]py.Py_ssize_t{@intCast(num_elements)},
+                                .strides = if (buffer.strides) |s| s[0..ndim] else null,
+                                ._py_obj = obj,
+                                ._buffer = buffer,
+                            };
+                        } else {
+                            return T{
+                                .data = ptr[0..num_elements],
+                                .ndim = ndim,
+                                .shape = if (buffer.shape) |s| s[0..ndim] else &[_]py.Py_ssize_t{@intCast(num_elements)},
+                                .strides = if (buffer.strides) |s| s[0..ndim] else null,
+                                ._py_obj = obj,
+                                ._buffer = buffer,
+                                // _shape_storage is void in non-ABI3 mode, so we use {}
+                                ._shape_storage = if (abi3_enabled) undefined else {},
+                            };
+                        }
                     }
                 }
             }
@@ -650,6 +668,119 @@ pub fn Converter(comptime class_types: []const type) type {
             };
         }
     };
+}
+
+/// ABI3 buffer conversion using memoryview + tobytes()
+/// This is a copy-based fallback when PyObject_GetBuffer is not available
+fn convertBufferAbi3(comptime T: type, comptime ElementType: type, obj: *PyObject) !T {
+    const c = py.c;
+
+    // Create a memoryview from the object
+    const memview = c.PyMemoryView_FromObject(obj) orelse {
+        py.PyErr_SetString(py.PyExc_TypeError(), "Object does not support buffer protocol");
+        return error.TypeError;
+    };
+    defer py.Py_DecRef(memview);
+
+    // Get format string for validation
+    const format_obj = c.PyObject_GetAttrString(memview, "format") orelse {
+        py.PyErr_SetString(py.PyExc_TypeError(), "Cannot get buffer format");
+        return error.TypeError;
+    };
+    defer py.Py_DecRef(format_obj);
+
+    var format_size: py.Py_ssize_t = 0;
+    const format_ptr = py.PyUnicode_AsUTF8AndSize(format_obj, &format_size) orelse {
+        py.PyErr_SetString(py.PyExc_TypeError(), "Cannot get buffer format string");
+        return error.TypeError;
+    };
+    const format_str = format_ptr[0..@intCast(format_size)];
+
+    // Validate format matches expected type
+    if (!checkBufferFormatAbi3(ElementType, format_str)) {
+        py.PyErr_SetString(py.PyExc_TypeError(), "Buffer format does not match expected type");
+        return error.TypeError;
+    }
+
+    // Get itemsize for validation
+    const itemsize_obj = c.PyObject_GetAttrString(memview, "itemsize") orelse {
+        py.PyErr_SetString(py.PyExc_TypeError(), "Cannot get buffer itemsize");
+        return error.TypeError;
+    };
+    defer py.Py_DecRef(itemsize_obj);
+    const itemsize: usize = @intCast(py.PyLong_AsLongLong(itemsize_obj));
+
+    if (itemsize != @sizeOf(ElementType)) {
+        py.PyErr_SetString(py.PyExc_TypeError(), "Buffer item size mismatch");
+        return error.TypeError;
+    }
+
+    // Get shape
+    const shape_obj = c.PyObject_GetAttrString(memview, "shape") orelse {
+        py.PyErr_SetString(py.PyExc_TypeError(), "Cannot get buffer shape");
+        return error.TypeError;
+    };
+    defer py.Py_DecRef(shape_obj);
+
+    const ndim: usize = @intCast(py.PyTuple_Size(shape_obj));
+    var result: T = undefined;
+
+    // Store shape values
+    var num_elements: usize = 1;
+    for (0..@min(ndim, 8)) |i| {
+        const dim_obj = py.PyTuple_GetItem(shape_obj, @intCast(i)) orelse {
+            return error.TypeError;
+        };
+        const dim_val: py.Py_ssize_t = @intCast(py.PyLong_AsLongLong(dim_obj));
+        result._shape_storage[i] = dim_val;
+        num_elements *= @intCast(dim_val);
+    }
+
+    // Call tobytes() to get the data as a bytes object
+    const tobytes_method = c.PyObject_GetAttrString(memview, "tobytes") orelse {
+        py.PyErr_SetString(py.PyExc_TypeError(), "Cannot get tobytes method");
+        return error.TypeError;
+    };
+    defer py.Py_DecRef(tobytes_method);
+
+    // Call tobytes() with empty tuple (PyObject_CallNoArgs is not in Limited API)
+    const empty_tuple = c.PyTuple_New(0) orelse {
+        return error.TypeError;
+    };
+    defer py.Py_DecRef(empty_tuple);
+
+    const bytes_obj = c.PyObject_Call(tobytes_method, empty_tuple, null) orelse {
+        return error.TypeError;
+    };
+    // Don't defer decref - we store it in the result for later cleanup
+
+    // Get pointer to bytes data
+    var bytes_ptr: [*c]u8 = undefined;
+    var bytes_len: py.Py_ssize_t = 0;
+    if (c.PyBytes_AsStringAndSize(bytes_obj, &bytes_ptr, &bytes_len) < 0) {
+        py.Py_DecRef(bytes_obj);
+        return error.TypeError;
+    }
+
+    // Verify length matches
+    const expected_len = num_elements * @sizeOf(ElementType);
+    if (@as(usize, @intCast(bytes_len)) != expected_len) {
+        py.Py_DecRef(bytes_obj);
+        py.PyErr_SetString(py.PyExc_TypeError(), "Buffer size mismatch");
+        return error.TypeError;
+    }
+
+    // Create slice from bytes data
+    const data_ptr: [*]const ElementType = @ptrCast(@alignCast(bytes_ptr));
+
+    result.data = data_ptr[0..num_elements];
+    result.ndim = ndim;
+    result.shape = result._shape_storage[0..ndim];
+    result.strides = null; // ABI3 data is always contiguous (it's a copy)
+    result._py_obj = obj;
+    result._buffer = bytes_obj; // Store bytes object for cleanup
+
+    return result;
 }
 
 /// Basic conversions (no class awareness) - for backwards compatibility

@@ -6,6 +6,8 @@
 const std = @import("std");
 const py = @import("../python.zig");
 const PyObject = py.PyObject;
+const abi = @import("../abi.zig");
+const slots = @import("../python/slots.zig");
 
 /// Zero-copy view of a Python iterator for use as a function parameter.
 /// Can receive any Python iterable (list, set, dict, generator, etc.)
@@ -230,10 +232,14 @@ pub fn LazyIteratorWrapper(comptime T: type, comptime State: type) type {
             py.PyObject_Del(obj);
         }
 
-        /// The Python type object for this iterator
+        /// The Python type object for this iterator (non-ABI3 mode)
         pub var type_object: py.PyTypeObject = makeTypeObject();
 
         fn makeTypeObject() py.PyTypeObject {
+            if (abi.abi3_enabled) {
+                return undefined;
+            }
+
             var obj: py.PyTypeObject = std.mem.zeroes(py.PyTypeObject);
 
             // Basic setup - handle refcnt field difference across Python versions
@@ -255,21 +261,85 @@ pub fn LazyIteratorWrapper(comptime T: type, comptime State: type) type {
             return obj;
         }
 
+        // ================================================================
+        // ABI3 Mode: PyType_FromSpec with slots
+        // ================================================================
+
+        /// Slots array for ABI3 mode
+        var type_slots: [5]py.PyType_Slot = makeSlots();
+
+        fn makeSlots() [5]py.PyType_Slot {
+            if (!abi.abi3_enabled) {
+                return undefined;
+            }
+
+            return .{
+                .{ .slot = slots.tp_dealloc, .pfunc = @ptrCast(@constCast(&py_dealloc)) },
+                .{ .slot = slots.tp_doc, .pfunc = @ptrCast(@constCast("PyOZ lazy iterator")) },
+                .{ .slot = slots.tp_iter, .pfunc = @ptrCast(@constCast(&py_iter)) },
+                .{ .slot = slots.tp_iternext, .pfunc = @ptrCast(@constCast(&py_iternext)) },
+                .{ .slot = 0, .pfunc = null }, // sentinel
+            };
+        }
+
+        /// PyType_Spec for ABI3 mode
+        var type_spec: py.PyType_Spec = makeTypeSpec();
+
+        fn makeTypeSpec() py.PyType_Spec {
+            if (!abi.abi3_enabled) {
+                return undefined;
+            }
+
+            return .{
+                // Use "builtins.pyoz_iterator" format so Python extracts __module__ from tp_name
+                // When tp_name contains a '.', Python automatically sets __module__
+                .name = "builtins.pyoz_iterator",
+                .basicsize = @sizeOf(PyIterWrapper),
+                .itemsize = 0,
+                .flags = py.Py_TPFLAGS_DEFAULT,
+                .slots = @ptrCast(&type_slots),
+            };
+        }
+
+        /// Heap type pointer for ABI3 mode
+        var heap_type: ?*py.PyTypeObject = null;
+
         var type_ready: bool = false;
 
         /// Initialize the type (must be called before creating instances)
         pub fn ensureTypeReady() bool {
             if (type_ready) return true;
-            if (py.PyType_Ready(&type_object) < 0) return false;
+
+            if (abi.abi3_enabled) {
+                // ABI3 mode: use PyType_FromSpec
+                // Note: __module__ is automatically extracted from tp_name ("builtins.pyoz_iterator")
+                const type_obj = py.c.PyType_FromSpec(&type_spec);
+                if (type_obj == null) return false;
+                heap_type = @ptrCast(@alignCast(type_obj));
+            } else {
+                // Non-ABI3 mode: use PyType_Ready
+                if (py.PyType_Ready(&type_object) < 0) return false;
+            }
+
             type_ready = true;
             return true;
+        }
+
+        /// Get the type object pointer (works in both modes)
+        fn getTypePtr() *py.PyTypeObject {
+            if (abi.abi3_enabled) {
+                return heap_type orelse @panic("Iterator type not initialized");
+            } else {
+                return &type_object;
+            }
         }
 
         /// Create a new Python iterator from a LazyIterator value
         pub fn create(lazy_iter: LazyIterator(T, State)) ?*py.PyObject {
             if (!ensureTypeReady()) return null;
 
-            const obj = py.PyObject_New(PyIterWrapper, &type_object) orelse return null;
+            const type_ptr = getTypePtr();
+            const obj = py.PyObject_New(PyIterWrapper, type_ptr) orelse return null;
             obj.getState().* = lazy_iter.state;
             return @ptrCast(obj);
         }

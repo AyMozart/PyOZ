@@ -10,6 +10,7 @@ const mod = @import("python/mod.zig");
 
 // Re-export sub-modules for direct access
 pub const types = mod.types;
+pub const slots = mod.slots;
 pub const refcount = mod.refcount;
 pub const singletons = mod.singletons;
 pub const typecheck = mod.typecheck;

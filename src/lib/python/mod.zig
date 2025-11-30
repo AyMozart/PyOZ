@@ -9,6 +9,7 @@
 // ============================================================================
 
 pub const types = @import("types.zig");
+pub const slots = @import("slots.zig");
 pub const refcount = @import("refcount.zig");
 pub const singletons = @import("singletons.zig");
 pub const typecheck = @import("typecheck.zig");

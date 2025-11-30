@@ -25,6 +25,7 @@
 //! - gc.zig: Garbage collection support (__traverse__, __clear__)
 
 const class_mod = @import("class/mod.zig");
+const spec_mod = @import("class/spec.zig");
 
 // Re-export public API
 pub const ClassDef = class_mod.ClassDef;
@@ -33,3 +34,13 @@ pub const getWrapper = class_mod.getWrapper;
 pub const unwrap = class_mod.unwrap;
 pub const createSlotsTuple = class_mod.createSlotsTuple;
 pub const addClassAttributes = class_mod.addClassAttributes;
+pub const addClassAttributesAbi3 = class_mod.addClassAttributesAbi3;
+
+// ABI3 type creation via PyType_FromSpec
+pub const TypeSpec = spec_mod.TypeSpec;
+pub const SlotBuilder = spec_mod.SlotBuilder;
+pub const buildSlots = spec_mod.buildSlots;
+pub const buildSpec = spec_mod.buildSpec;
+pub const createType = spec_mod.createType;
+pub const createTypeWithBases = spec_mod.createTypeWithBases;
+pub const RuntimeSlotBuilder = spec_mod.RuntimeSlotBuilder;

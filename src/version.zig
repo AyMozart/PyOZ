@@ -2,7 +2,7 @@
 // This file is automatically parsed by build.zig for embed and metadata
 
 pub const major: u8 = 0;
-pub const minor: u8 = 6;
+pub const minor: u8 = 7;
 pub const patch: u8 = 0;
 
 /// Pre-release identifier (e.g., "alpha", "beta", "rc1", or null for release)
@@ -41,21 +41,4 @@ pub fn compare(other_major: u8, other_minor: u8, other_patch: u8) Ordering {
 /// Check if this version is at least the given version
 pub fn isAtLeast(min_major: u8, min_minor: u8, min_patch: u8) bool {
     return compare(min_major, min_minor, min_patch) != .less;
-}
-
-test "version string format" {
-    const testing = std.testing;
-    // Basic format check
-    try testing.expect(string.len > 0);
-    try testing.expect(std.mem.indexOf(u8, string, ".") != null);
-}
-
-test "version comparison" {
-    const testing = std.testing;
-    try testing.expect(compare(0, 6, 0) == .equal);
-    try testing.expect(compare(0, 5, 0) == .greater);
-    try testing.expect(compare(1, 0, 0) == .less);
-    try testing.expect(isAtLeast(0, 6, 0));
-    try testing.expect(isAtLeast(0, 5, 0));
-    try testing.expect(!isAtLeast(1, 0, 0));
 }

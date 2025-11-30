@@ -27,7 +27,23 @@ pub inline fn PyModule_AddStringConstant(module: *PyObject, name: [*:0]const u8,
 }
 
 pub inline fn PyModule_AddType(module: *PyObject, type_obj: *PyTypeObject) c_int {
-    return c.PyModule_AddType(module, type_obj);
+    // PyModule_AddType was added in Python 3.9 but may not be in Limited API
+    // Use PyModule_AddObject as fallback
+    if (@hasDecl(c, "PyModule_AddType")) {
+        return c.PyModule_AddType(module, type_obj);
+    } else {
+        // Fallback: use PyModule_AddObject with type name
+        // First get the type name
+        const name = type_obj.tp_name orelse return -1;
+        // PyModule_AddObject steals a reference on success, so incref first
+        c.Py_IncRef(@ptrCast(type_obj));
+        const result = c.PyModule_AddObject(module, name, @ptrCast(type_obj));
+        if (result < 0) {
+            // Failed, so decref to undo our incref
+            c.Py_DecRef(@ptrCast(type_obj));
+        }
+        return result;
+    }
 }
 
 /// Get the dictionary of a module

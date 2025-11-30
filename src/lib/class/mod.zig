@@ -9,6 +9,8 @@
 const std = @import("std");
 const py = @import("../python.zig");
 const conversion = @import("../conversion.zig");
+const abi = @import("../abi.zig");
+const slots = @import("../python/slots.zig");
 
 // Sub-modules
 const wrapper_mod = @import("wrapper.zig");
@@ -98,7 +100,15 @@ fn generateClass(comptime name: [*:0]const u8, comptime T: type) type {
         const weakref_struct_offset = WrapperResult.weakref_struct_offset;
 
         // Build protocol handlers
-        const lifecycle = lifecycle_mod.LifecycleBuilder(T, PyWrapper, &type_object, has_dict_support, has_weakref_support, is_builtin_subclass);
+        // In ABI3 mode, we pass null since type_object is void
+        const lifecycle = lifecycle_mod.LifecycleBuilder(
+            T,
+            PyWrapper,
+            if (abi.abi3_enabled) null else &type_object,
+            has_dict_support,
+            has_weakref_support,
+            is_builtin_subclass,
+        );
         const num = number_mod.NumberProtocol(T, Self);
         const seq = sequence_mod.SequenceProtocol(T, Self);
         const map = mapping_mod.MappingProtocol(T, Self);
@@ -115,7 +125,11 @@ fn generateClass(comptime name: [*:0]const u8, comptime T: type) type {
 
         // Helper function to get type object pointer (for protocols that need it)
         pub fn getTypeObjectPtr() *py.PyTypeObject {
-            return &type_object;
+            if (comptime abi.abi3_enabled) {
+                return heap_type orelse @panic("Type not initialized - call initType() first");
+            } else {
+                return &type_object;
+            }
         }
 
         // ====================================================================
@@ -168,12 +182,17 @@ fn generateClass(comptime name: [*:0]const u8, comptime T: type) type {
         };
 
         // ====================================================================
-        // Type Object (static)
+        // Type Object (static) - Non-ABI3 mode only
         // ====================================================================
 
-        pub var type_object: py.PyTypeObject = makeTypeObject();
+        // In ABI3 mode, PyTypeObject is opaque so we can't create a static instance.
+        // We use a dummy type (void) and rely on PyType_FromSpec for initialization.
+        pub var type_object: if (abi.abi3_enabled) void else py.PyTypeObject =
+            if (abi.abi3_enabled) {} else makeTypeObject();
 
-        fn makeTypeObject() py.PyTypeObject {
+        fn makeTypeObject() if (abi.abi3_enabled) void else py.PyTypeObject {
+            if (abi.abi3_enabled) return {};
+
             var obj: py.PyTypeObject = std.mem.zeroes(py.PyTypeObject);
 
             // Basic setup
@@ -333,7 +352,10 @@ fn generateClass(comptime name: [*:0]const u8, comptime T: type) type {
         /// Initialize base type at runtime (required on Windows for DLL imports)
         /// On Windows, DLL data symbols like PyList_Type need runtime address
         /// resolution. This function must be called before PyType_Ready().
+        /// Note: In ABI3 mode, this is a no-op since we use PyType_FromSpec.
         pub fn initBase() void {
+            if (comptime abi.abi3_enabled) return;
+
             if (@import("builtin").os.tag == .windows) {
                 if (@hasDecl(T, "__base__")) {
                     type_object.tp_base = T.__base__();
@@ -342,11 +364,275 @@ fn generateClass(comptime name: [*:0]const u8, comptime T: type) type {
         }
 
         // ====================================================================
+        // ABI3 Mode: PyType_FromSpec with Slot Arrays
+        // ====================================================================
+
+        /// Count total number of slots needed for this class (ABI3 mode)
+        fn countTotalSlots() usize {
+            if (!abi.abi3_enabled) return 0;
+
+            var count: usize = 0;
+
+            // Basic type slots
+            if (!is_builtin_subclass) {
+                count += 3; // tp_new, tp_init, tp_dealloc
+            }
+
+            // tp_methods, tp_getset
+            count += 2;
+
+            // tp_members for __dict__/__weakref__
+            if ((has_dict_support or has_weakref_support) and !is_builtin_subclass) {
+                count += 1;
+            }
+
+            // tp_doc
+            count += 1;
+
+            // tp_repr, tp_str
+            count += 1; // tp_repr always present
+            if (@hasDecl(T, "__str__")) count += 1;
+
+            // Comparison
+            if (@hasDecl(T, "__eq__") or @hasDecl(T, "__ne__") or @hasDecl(T, "__lt__") or
+                @hasDecl(T, "__le__") or @hasDecl(T, "__gt__") or @hasDecl(T, "__ge__"))
+            {
+                count += 1;
+            }
+
+            // Hash
+            if (@hasDecl(T, "__hash__")) count += 1;
+
+            // Iterator
+            if (@hasDecl(T, "__iter__")) count += 1;
+            if (@hasDecl(T, "__next__")) count += 1;
+
+            // Descriptor
+            if (@hasDecl(T, "__get__")) count += 1;
+            if (@hasDecl(T, "__set__") or @hasDecl(T, "__delete__")) count += 1;
+
+            // Callable
+            if (@hasDecl(T, "__call__")) count += 1;
+
+            // Attribute access
+            if (@hasDecl(T, "__getattr__") or has_dict_support) count += 1;
+            if (@hasDecl(T, "__setattr__") or @hasDecl(T, "__delattr__") or has_dict_support or attr.isFrozen()) count += 1;
+
+            // GC
+            if (gc.hasGCSupport()) {
+                count += 1; // tp_traverse
+                if (@hasDecl(T, "__clear__")) count += 1;
+            }
+
+            // Protocol slots from sub-modules
+            count += num.slotCount();
+            count += seq.slotCount();
+            count += map.slotCount();
+
+            // Sentinel
+            count += 1;
+
+            return count;
+        }
+
+        const total_slot_count = countTotalSlots();
+
+        /// Build the slots array for PyType_FromSpec (ABI3 mode)
+        pub var type_slots: [total_slot_count]py.PyType_Slot = buildSlots();
+
+        fn buildSlots() [total_slot_count]py.PyType_Slot {
+            if (!abi.abi3_enabled) {
+                return undefined;
+            }
+
+            var slot_array: [total_slot_count]py.PyType_Slot = undefined;
+            var idx: usize = 0;
+
+            // Basic lifecycle slots
+            if (!is_builtin_subclass) {
+                slot_array[idx] = .{ .slot = slots.tp_new, .pfunc = @ptrCast(@constCast(&lifecycle.py_new)) };
+                idx += 1;
+                slot_array[idx] = .{ .slot = slots.tp_init, .pfunc = @ptrCast(@constCast(&lifecycle.py_init)) };
+                idx += 1;
+                slot_array[idx] = .{ .slot = slots.tp_dealloc, .pfunc = @ptrCast(@constCast(&lifecycle.py_dealloc)) };
+                idx += 1;
+            }
+
+            // Methods and properties
+            slot_array[idx] = .{ .slot = slots.tp_methods, .pfunc = @ptrCast(@constCast(&meths.methods)) };
+            idx += 1;
+            slot_array[idx] = .{ .slot = slots.tp_getset, .pfunc = @ptrCast(@constCast(&props.getset)) };
+            idx += 1;
+
+            // Members for __dict__/__weakref__
+            if ((has_dict_support or has_weakref_support) and !is_builtin_subclass) {
+                slot_array[idx] = .{ .slot = slots.tp_members, .pfunc = @ptrCast(@constCast(&feature_members)) };
+                idx += 1;
+            }
+
+            // Documentation
+            const doc_ptr: [*:0]const u8 = if (@hasDecl(T, "__doc__")) blk: {
+                const DocType = @TypeOf(T.__doc__);
+                if (DocType != [*:0]const u8) {
+                    @compileError("__doc__ must be declared as [*:0]const u8");
+                }
+                break :blk T.__doc__;
+            } else name;
+            slot_array[idx] = .{ .slot = slots.tp_doc, .pfunc = @ptrCast(@constCast(doc_ptr)) };
+            idx += 1;
+
+            // Repr protocol
+            if (@hasDecl(T, "__repr__")) {
+                slot_array[idx] = .{ .slot = slots.tp_repr, .pfunc = @ptrCast(@constCast(&repr.py_magic_repr)) };
+            } else {
+                slot_array[idx] = .{ .slot = slots.tp_repr, .pfunc = @ptrCast(@constCast(&repr.py_repr)) };
+            }
+            idx += 1;
+
+            if (@hasDecl(T, "__str__")) {
+                slot_array[idx] = .{ .slot = slots.tp_str, .pfunc = @ptrCast(@constCast(&repr.py_magic_str)) };
+                idx += 1;
+            }
+
+            // Comparison protocol
+            if (@hasDecl(T, "__eq__") or @hasDecl(T, "__ne__") or @hasDecl(T, "__lt__") or
+                @hasDecl(T, "__le__") or @hasDecl(T, "__gt__") or @hasDecl(T, "__ge__"))
+            {
+                slot_array[idx] = .{ .slot = slots.tp_richcompare, .pfunc = @ptrCast(@constCast(&cmp.py_richcompare)) };
+                idx += 1;
+            }
+
+            // Hash
+            if (@hasDecl(T, "__hash__")) {
+                slot_array[idx] = .{ .slot = slots.tp_hash, .pfunc = @ptrCast(@constCast(&repr.py_hash)) };
+                idx += 1;
+            }
+
+            // Iterator protocol
+            if (@hasDecl(T, "__iter__")) {
+                slot_array[idx] = .{ .slot = slots.tp_iter, .pfunc = @ptrCast(@constCast(&iter.py_iter)) };
+                idx += 1;
+            }
+            if (@hasDecl(T, "__next__")) {
+                slot_array[idx] = .{ .slot = slots.tp_iternext, .pfunc = @ptrCast(@constCast(&iter.py_iternext)) };
+                idx += 1;
+            }
+
+            // Descriptor protocol
+            if (@hasDecl(T, "__get__")) {
+                slot_array[idx] = .{ .slot = slots.tp_descr_get, .pfunc = @ptrCast(@constCast(&desc.py_descr_get)) };
+                idx += 1;
+            }
+            if (@hasDecl(T, "__set__") or @hasDecl(T, "__delete__")) {
+                slot_array[idx] = .{ .slot = slots.tp_descr_set, .pfunc = @ptrCast(@constCast(&desc.py_descr_set)) };
+                idx += 1;
+            }
+
+            // Callable protocol
+            if (@hasDecl(T, "__call__")) {
+                slot_array[idx] = .{ .slot = slots.tp_call, .pfunc = @ptrCast(@constCast(&call.py_call)) };
+                idx += 1;
+            }
+
+            // Attribute access
+            if (@hasDecl(T, "__getattr__")) {
+                slot_array[idx] = .{ .slot = slots.tp_getattro, .pfunc = @ptrCast(@constCast(&attr.py_getattro)) };
+                idx += 1;
+            } else if (has_dict_support) {
+                slot_array[idx] = .{ .slot = slots.tp_getattro, .pfunc = @ptrCast(py.c.PyObject_GenericGetAttr) };
+                idx += 1;
+            }
+
+            if (attr.isFrozen()) {
+                slot_array[idx] = .{ .slot = slots.tp_setattro, .pfunc = @ptrCast(@constCast(&attr.py_frozen_setattro)) };
+                idx += 1;
+            } else if (@hasDecl(T, "__setattr__") or @hasDecl(T, "__delattr__")) {
+                slot_array[idx] = .{ .slot = slots.tp_setattro, .pfunc = @ptrCast(@constCast(&attr.py_setattro)) };
+                idx += 1;
+            } else if (has_dict_support) {
+                slot_array[idx] = .{ .slot = slots.tp_setattro, .pfunc = @ptrCast(py.c.PyObject_GenericSetAttr) };
+                idx += 1;
+            }
+
+            // GC support
+            if (gc.hasGCSupport()) {
+                slot_array[idx] = .{ .slot = slots.tp_traverse, .pfunc = @ptrCast(@constCast(&gc.py_traverse)) };
+                idx += 1;
+                if (@hasDecl(T, "__clear__")) {
+                    slot_array[idx] = .{ .slot = slots.tp_clear, .pfunc = @ptrCast(@constCast(&gc.py_clear)) };
+                    idx += 1;
+                }
+            }
+
+            // Protocol slots from sub-modules
+            idx += num.addSlots(&slot_array, idx);
+            idx += seq.addSlots(&slot_array, idx);
+            idx += map.addSlots(&slot_array, idx);
+
+            // Sentinel
+            slot_array[idx] = .{ .slot = 0, .pfunc = null };
+
+            return slot_array;
+        }
+
+        /// PyType_Spec for ABI3 mode
+        pub var type_spec: py.PyType_Spec = makeTypeSpec();
+
+        fn makeTypeSpec() py.PyType_Spec {
+            if (!abi.abi3_enabled) {
+                return undefined;
+            }
+
+            return .{
+                .name = name,
+                .basicsize = if (is_builtin_subclass) 0 else @sizeOf(PyWrapper),
+                .itemsize = 0,
+                .flags = @as(c_uint, py.Py_TPFLAGS_DEFAULT | py.Py_TPFLAGS_BASETYPE |
+                    (if (gc.hasGCSupport()) py.Py_TPFLAGS_HAVE_GC else 0)),
+                .slots = @ptrCast(&type_slots),
+            };
+        }
+
+        /// Storage for heap type pointer in ABI3 mode
+        pub var heap_type: ?*py.PyTypeObject = null;
+
+        /// Initialize type - call PyType_Ready (non-ABI3) or PyType_FromSpec (ABI3)
+        /// Returns the type object pointer on success, null on failure
+        pub fn initType() ?*py.PyTypeObject {
+            if (comptime abi.abi3_enabled) {
+                // ABI3 mode: use PyType_FromSpec to create heap type
+                const type_obj = py.c.PyType_FromSpec(&type_spec);
+                if (type_obj == null) {
+                    return null;
+                }
+                heap_type = @ptrCast(@alignCast(type_obj));
+                return heap_type;
+            } else {
+                // Non-ABI3 mode: use static type object with PyType_Ready
+                initBase();
+                if (py.c.PyType_Ready(&type_object) < 0) {
+                    return null;
+                }
+                return &type_object;
+            }
+        }
+
+        /// Get the type object pointer (works in both modes)
+        pub fn getType() *py.PyTypeObject {
+            if (comptime abi.abi3_enabled) {
+                return heap_type orelse @panic("Type not initialized - call initType() first");
+            } else {
+                return &type_object;
+            }
+        }
+
+        // ====================================================================
         // Helper to extract Zig data from a Python object
         // ====================================================================
 
         pub fn unwrap(obj: *py.PyObject) ?*T {
-            if (!py.PyObject_TypeCheck(obj, &type_object)) {
+            const type_ptr = getType();
+            if (!py.PyObject_TypeCheck(obj, type_ptr)) {
                 return null;
             }
             const wrapper_ptr: *PyWrapper = @ptrCast(@alignCast(obj));
@@ -354,7 +640,8 @@ fn generateClass(comptime name: [*:0]const u8, comptime T: type) type {
         }
 
         pub fn unwrapConst(obj: *py.PyObject) ?*const T {
-            if (!py.PyObject_TypeCheck(obj, &type_object)) {
+            const type_ptr = getType();
+            if (!py.PyObject_TypeCheck(obj, type_ptr)) {
                 return null;
             }
             const wrapper_ptr: *const PyWrapper = @ptrCast(@alignCast(obj));
@@ -411,6 +698,37 @@ pub fn addClassAttributes(comptime T: type, type_dict: *py.PyObject) bool {
             };
 
             if (py.PyDict_SetItemString(type_dict, attr_name.ptr, py_value) < 0) {
+                py.Py_DecRef(py_value);
+                return false;
+            }
+            py.Py_DecRef(py_value);
+        }
+    }
+
+    return true;
+}
+
+/// Add class attributes in ABI3 mode using PyObject_SetAttrString
+/// since tp_dict is not accessible in stable ABI
+pub fn addClassAttributesAbi3(comptime T: type, type_obj: *py.PyObject) bool {
+    const info = @typeInfo(T);
+    if (info != .@"struct") return true;
+
+    const decls = info.@"struct".decls;
+    const Conv = conversion.Conversions;
+
+    inline for (decls) |decl| {
+        const prefix = "classattr_";
+        if (decl.name.len > prefix.len and std.mem.startsWith(u8, decl.name, prefix)) {
+            const attr_name = decl.name[prefix.len..];
+            const value = @field(T, decl.name);
+            const ValueType = @TypeOf(value);
+
+            const py_value = Conv.toPy(ValueType, value) orelse {
+                return false;
+            };
+
+            if (py.PyObject_SetAttrString(type_obj, attr_name.ptr, py_value) < 0) {
                 py.Py_DecRef(py_value);
                 return false;
             }

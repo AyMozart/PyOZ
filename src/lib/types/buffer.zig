@@ -1,7 +1,10 @@
 //! Buffer types for Python interop
 //!
-//! Provides BufferView and BufferViewMut for zero-copy access to numpy arrays
+//! Provides BufferView and BufferViewMut for access to numpy arrays
 //! and other objects supporting the Python buffer protocol.
+//!
+//! In non-ABI3 mode: Zero-copy access via PyObject_GetBuffer
+//! In ABI3 mode: Copy-based access via memoryview.tobytes() (Limited API compatible)
 
 const std = @import("std");
 const py = @import("../python.zig");
@@ -13,8 +16,22 @@ const complex_types = @import("complex.zig");
 const Complex = complex_types.Complex;
 const Complex32 = complex_types.Complex32;
 
+const abi3_enabled = py.types.abi3_enabled;
+const c = py.c;
+
+/// Whether zero-copy buffer access is available (not in ABI3 mode)
+pub const zero_copy_available = py.buffer.available;
+
+/// Whether buffer consumer is available (always true - ABI3 uses copy-based fallback)
+pub const available = true;
+
+// ============================================================================
+// BufferView - works in both modes
+// ============================================================================
+
 /// Buffer info struct for implementing the buffer protocol
 /// Return this from your __buffer__ method to expose memory to Python/numpy
+/// NOTE: Not available in ABI3 mode (producer only)
 pub const BufferInfo = struct {
     ptr: [*]u8,
     len: usize,
@@ -24,13 +41,26 @@ pub const BufferInfo = struct {
     ndim: usize = 1,
     shape: ?[*]Py_ssize_t = null,
     strides: ?[*]Py_ssize_t = null,
+
+    comptime {
+        if (abi3_enabled) {
+            @compileError(
+                \\BufferInfo (buffer producer) is not available in ABI3 mode.
+                \\The buffer protocol cannot be implemented in the Limited API.
+                \\Use a regular method returning bytes or a list instead.
+            );
+        }
+    }
 };
 
-/// Zero-copy view into a Python buffer (numpy array, bytes, memoryview, etc.)
-/// Use this as a function parameter type to receive numpy arrays without copying.
+/// View into a Python buffer (numpy array, bytes, memoryview, etc.)
+/// Use this as a function parameter type to receive numpy arrays.
+///
+/// In non-ABI3 mode: Zero-copy access (data points directly to Python memory)
+/// In ABI3 mode: Copy-based access (data is copied via memoryview.tobytes())
 ///
 /// The view is valid only during the function call - do not store references to the data.
-/// For mutable access, use BufferViewMut(T).
+/// For mutable access, use BufferViewMut(T) (non-ABI3 only).
 ///
 /// Supported element types: i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, Complex, Complex32
 ///
@@ -47,7 +77,7 @@ pub const BufferInfo = struct {
 /// ```python
 /// import numpy as np
 /// arr = np.array([1.0, 2.0, 3.0], dtype=np.float64)
-/// result = mymodule.sum_array(arr)  # Zero-copy!
+/// result = mymodule.sum_array(arr)
 /// ```
 pub fn BufferView(comptime T: type) type {
     return struct {
@@ -59,17 +89,25 @@ pub fn BufferView(comptime T: type) type {
         ndim: usize,
         /// Shape of each dimension
         shape: []const Py_ssize_t,
-        /// Strides for each dimension (in bytes)
+        /// Strides for each dimension (in bytes) - null in ABI3 mode
         strides: ?[]const Py_ssize_t,
+
+        // Internal fields differ between ABI3 and non-ABI3 modes
         /// The Python object (for reference counting)
         _py_obj: *PyObject,
-        /// The buffer view (must be released)
-        _buffer: py.Py_buffer,
+
+        // Non-ABI3: buffer view that must be released
+        // ABI3: bytes object containing copied data
+        _buffer: if (abi3_enabled) ?*PyObject else py.Py_buffer,
+
+        // ABI3 mode: we need to store shape values since we get them from Python
+        _shape_storage: if (abi3_enabled) [8]Py_ssize_t else void,
 
         const Self = @This();
         pub const ElementType = T;
         pub const is_buffer_view = true;
         pub const is_mutable = false;
+        pub const is_zero_copy = !abi3_enabled;
 
         /// Get the total number of elements
         pub fn len(self: Self) usize {
@@ -83,7 +121,12 @@ pub fn BufferView(comptime T: type) type {
 
         /// Check if the buffer is C-contiguous (row-major)
         pub fn isContiguous(self: Self) bool {
-            return self._buffer.strides == null or self.ndim == 1;
+            if (abi3_enabled) {
+                // In ABI3 mode, data is always contiguous (it's a copy)
+                return true;
+            } else {
+                return self._buffer.strides == null or self.ndim == 1;
+            }
         }
 
         /// Get element at a flat index
@@ -94,16 +137,22 @@ pub fn BufferView(comptime T: type) type {
         /// Get element at 2D index (row, col) - only valid for 2D arrays
         pub fn get2D(self: Self, row: usize, col: usize) T {
             if (self.ndim != 2) @panic("get2D requires 2D array");
-            if (self.strides) |strd| {
-                // Use strides for non-contiguous access
-                const byte_offset = @as(usize, @intCast(strd[0])) * row + @as(usize, @intCast(strd[1])) * col;
-                const ptr: [*]const T = @ptrCast(@alignCast(self._buffer.buf.?));
-                const byte_ptr: [*]const u8 = @ptrCast(ptr);
-                return @as(*const T, @ptrCast(@alignCast(byte_ptr + byte_offset))).*;
-            } else {
-                // C-contiguous
+            if (abi3_enabled) {
+                // ABI3: data is always C-contiguous
                 const num_cols: usize = @intCast(self.shape[1]);
                 return self.data[row * num_cols + col];
+            } else {
+                if (self.strides) |strd| {
+                    // Use strides for non-contiguous access
+                    const byte_offset = @as(usize, @intCast(strd[0])) * row + @as(usize, @intCast(strd[1])) * col;
+                    const ptr: [*]const T = @ptrCast(@alignCast(self._buffer.buf.?));
+                    const byte_ptr: [*]const u8 = @ptrCast(ptr);
+                    return @as(*const T, @ptrCast(@alignCast(byte_ptr + byte_offset))).*;
+                } else {
+                    // C-contiguous
+                    const num_cols: usize = @intCast(self.shape[1]);
+                    return self.data[row * num_cols + col];
+                }
             }
         }
 
@@ -147,13 +196,23 @@ pub fn BufferView(comptime T: type) type {
 
         /// Release the buffer - called automatically by the wrapper
         pub fn release(self: *Self) void {
-            py.PyBuffer_Release(&self._buffer);
+            if (abi3_enabled) {
+                // ABI3: release the bytes object containing the copied data
+                if (self._buffer) |bytes_obj| {
+                    py.Py_DecRef(bytes_obj);
+                }
+            } else {
+                py.PyBuffer_Release(&self._buffer);
+            }
         }
     };
 }
 
 /// Mutable zero-copy view into a Python buffer (numpy array, bytearray, etc.)
 /// Use this when you need to modify the array data in-place.
+///
+/// NOTE: Not available in ABI3 mode - mutable buffer access requires direct
+/// memory access which is not possible through the Limited API.
 ///
 /// Example:
 /// ```zig
@@ -170,6 +229,20 @@ pub fn BufferView(comptime T: type) type {
 /// print(arr)  # [2.0, 4.0, 6.0]
 /// ```
 pub fn BufferViewMut(comptime T: type) type {
+    if (abi3_enabled) {
+        @compileError(
+            \\BufferViewMut is not available in ABI3 mode.
+            \\
+            \\Mutable buffer access requires direct memory access which is not
+            \\possible through the Python Limited API.
+            \\
+            \\Workarounds:
+            \\  - Use BufferView (read-only) and return a new list/array
+            \\  - Accept a list, modify it, and return a new list
+            \\  - Set abi3 = false in your build configuration
+        );
+    }
+
     return struct {
         pub const _is_pyoz_buffer_mut = true;
 
@@ -315,4 +388,20 @@ pub fn checkBufferFormat(comptime T: type, format: ?[*:0]const u8) bool {
         };
     }
     return false;
+}
+
+/// Check buffer format for ABI3 mode (format comes as Python string)
+pub fn checkBufferFormatAbi3(comptime T: type, format_str: []const u8) bool {
+    if (format_str.len == 0) return false;
+
+    return switch (T) {
+        i64 => format_str[0] == 'q' or format_str[0] == 'l',
+        u64 => format_str[0] == 'Q' or format_str[0] == 'L',
+        Complex => std.mem.eql(u8, format_str, "Zd"),
+        Complex32 => std.mem.eql(u8, format_str, "Zf"),
+        else => {
+            const expected = getBufferFormat(T);
+            return format_str[0] == expected[0];
+        },
+    };
 }

@@ -5,9 +5,54 @@ All notable changes to PyOZ will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.0] - 2025-11-30
 
 ### Added
+- **Full ABI3 (Stable ABI) Support** - Build Python extensions compatible with Python 3.8+
+  - Enable via `-Dabi3=true` build option or `abi3 = true` in pyproject.toml
+  - Uses Python's Limited API (`Py_LIMITED_API = 0x03080000`) for forward compatibility
+  - Single wheel works across Python 3.8, 3.9, 3.10, 3.11, 3.12, 3.13+
+  - Wheel tags correctly use `cp38-abi3-platform` format
+  - Comprehensive example module demonstrating all ABI3-compatible features
+
+- **ABI3-Compatible Features** - Most PyOZ features work in ABI3 mode:
+  - All basic types: int, float, bool, strings, bytes, complex, datetime, decimal, path
+  - Collections: list, dict, set (via Views)
+  - Classes with all magic methods: `__add__`, `__sub__`, `__mul__`, `__eq__`, `__lt__`, etc.
+  - Context managers: `__enter__`, `__exit__`
+  - Descriptors: `__get__`, `__set__`, `__delete__`
+  - Dynamic attributes: `__getattr__`, `__setattr__`, `__delattr__`
+  - Iterators: `__iter__`, `__next__`, `__reversed__`
+  - Callable objects: `__call__` with multiple arguments
+  - Hashable/frozen classes: `__hash__`, `__frozen__`
+  - Class attributes via `classattr_*` prefix
+  - Computed properties via `get_X`/`set_X` pattern
+  - `pyoz.property()` API for explicit property definitions
+  - GIL management: `releaseGIL()`, `acquireGIL()` (stable ABI functions)
+  - Enums (IntEnum and StrEnum)
+  - Custom exceptions with inheritance
+  - Error mappings
+  - In-place operators: `__iadd__`, `__ior__`, `__iand__`, etc.
+  - Reflected operators: `__radd__`, `__rmul__`, etc.
+  - Matrix operators: `__matmul__`, `__rmatmul__`, `__imatmul__`
+  - Type coercion: `__int__`, `__float__`, `__bool__`, `__complex__`, `__index__`
+  - `Iterator(T)` and `LazyIterator(T, State)` producers
+  - `BufferView(T)` for read-only numpy array access
+
+- **ABI3 Configuration in pyproject.toml**:
+  ```toml
+  [tool.pyoz]
+  abi3 = true  # Enable ABI3/Limited API mode
+  ```
+
+- **ABI3 Limitations** - Features NOT available in ABI3 mode:
+  - `BufferViewMut(T)` - Mutable buffer access requires unstable API
+  - `__base__` inheritance - Extending Python built-in types (list, dict) not supported
+  - `__dict__` / `__weakref__` support - Requires type flag access
+  - `__buffer__` producer protocol - Buffer export requires unstable structures
+  - Submodules - Module hierarchy requires `tp_dict` access
+  - GC protocol (`__traverse__`, `__clear__`) - May work but needs verification
+
 - **`Iterator(T)` producer type** - Return Python lists from Zig slices
   - Eager evaluation: converts slice to Python list immediately
   - Use for small, known data sets

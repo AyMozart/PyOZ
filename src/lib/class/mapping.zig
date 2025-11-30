@@ -5,6 +5,8 @@
 const std = @import("std");
 const py = @import("../python.zig");
 const conversion = @import("../conversion.zig");
+const slots = @import("../python/slots.zig");
+const abi = @import("../abi.zig");
 
 fn getConversions() type {
     return conversion.Conversions;
@@ -164,6 +166,44 @@ pub fn MappingProtocol(comptime T: type, comptime Parent: type) type {
                 }
                 return 0;
             }
+        }
+
+        // =====================================================================
+        // ABI3 Slot Building Functions
+        // =====================================================================
+
+        /// Count how many slots are needed for mapping protocol (ABI3)
+        pub fn slotCount() usize {
+            if (!abi.abi3_enabled) return 0;
+
+            var count: usize = 0;
+            if (@hasDecl(T, "__len__")) count += 1;
+            if (@hasDecl(T, "__getitem__")) count += 1;
+            if (@hasDecl(T, "__setitem__") or @hasDecl(T, "__delitem__")) count += 1;
+            return count;
+        }
+
+        /// Add mapping protocol slots to a slot array (ABI3)
+        /// Returns the number of slots added
+        pub fn addSlots(slot_array: []py.PyType_Slot, start_idx: usize) usize {
+            if (!abi.abi3_enabled) return 0;
+
+            var idx = start_idx;
+
+            if (@hasDecl(T, "__len__")) {
+                slot_array[idx] = .{ .slot = slots.mp_length, .pfunc = @ptrCast(@constCast(&py_mp_length)) };
+                idx += 1;
+            }
+            if (@hasDecl(T, "__getitem__")) {
+                slot_array[idx] = .{ .slot = slots.mp_subscript, .pfunc = @ptrCast(@constCast(&py_mp_subscript)) };
+                idx += 1;
+            }
+            if (@hasDecl(T, "__setitem__") or @hasDecl(T, "__delitem__")) {
+                slot_array[idx] = .{ .slot = slots.mp_ass_subscript, .pfunc = @ptrCast(@constCast(&py_mp_ass_subscript)) };
+                idx += 1;
+            }
+
+            return idx - start_idx;
         }
     };
 }

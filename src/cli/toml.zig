@@ -14,6 +14,7 @@ pub const PyProjectConfig = struct {
     optimize: []const u8 = "",
     strip: bool = false,
     linux_platform_tag: []const u8 = "",
+    abi3: bool = false,
 
     // Track which fields were allocated
     name_allocated: bool = false,
@@ -57,6 +58,11 @@ pub const PyProjectConfig = struct {
     /// Get linux platform tag (empty string means use default linux_* tag)
     pub fn getLinuxPlatformTag(self: PyProjectConfig) []const u8 {
         return self.linux_platform_tag;
+    }
+
+    /// Get ABI3 mode (hardcoded to Python 3.8 minimum)
+    pub fn getAbi3(self: PyProjectConfig) bool {
+        return self.abi3;
     }
 };
 
@@ -123,6 +129,8 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) !PyProjectConfig
                 } else if (std.mem.eql(u8, key, "linux-platform-tag")) {
                     config.linux_platform_tag = try allocator.dupe(u8, value);
                     config.linux_platform_tag_allocated = true;
+                } else if (std.mem.eql(u8, key, "abi3")) {
+                    config.abi3 = std.mem.eql(u8, value, "true");
                 }
             },
             else => {},

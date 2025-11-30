@@ -86,6 +86,7 @@ nav:
           - GIL Management: guide/gil.md
           - Submodules: guide/submodules.md
           - Type Stubs: guide/stubs.md
+          - ABI3 (Stable ABI): guide/abi3.md
     - CLI:
           - pyoz init: cli/init.md
           - pyoz build: cli/build.md

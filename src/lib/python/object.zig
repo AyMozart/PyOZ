@@ -2,6 +2,7 @@
 
 const types = @import("types.zig");
 const c = types.c;
+const abi = @import("../abi.zig");
 const PyObject = types.PyObject;
 const PyTypeObject = types.PyTypeObject;
 const Py_ssize_t = types.Py_ssize_t;
@@ -15,10 +16,16 @@ pub inline fn PyObject_Init(obj: *PyObject, type_obj: *PyTypeObject) ?*PyObject 
 }
 
 pub inline fn PyObject_New(comptime T: type, type_obj: *PyTypeObject) ?*T {
-    // Use type's tp_basicsize for allocation - this is important for subclasses
-    // which may have larger basicsize to accommodate __dict__ and __weakref__
-    const size: usize = @intCast(type_obj.tp_basicsize);
-    const alloc_size = @max(size, @sizeOf(T));
+    // In ABI3 mode, tp_basicsize is not accessible (opaque type)
+    // Use compile-time known size instead
+    const alloc_size = if (comptime abi.abi3_enabled)
+        @sizeOf(T)
+    else blk: {
+        // Use type's tp_basicsize for allocation - this is important for subclasses
+        // which may have larger basicsize to accommodate __dict__ and __weakref__
+        const size: usize = @intCast(type_obj.tp_basicsize);
+        break :blk @max(size, @sizeOf(T));
+    };
     const obj = c.PyObject_Malloc(alloc_size);
     if (obj == null) return null;
     const typed: *T = @ptrCast(@alignCast(obj));
