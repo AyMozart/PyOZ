@@ -629,6 +629,15 @@ pub fn module(comptime config: anytype) type {
                 };
                 exception_types[i] = exc_type;
 
+                // Set docstring if provided
+                if (exceptions[i].doc) |doc| {
+                    const doc_str = py.PyUnicode_FromString(doc);
+                    if (doc_str) |ds| {
+                        _ = py.PyObject_SetAttrString(exc_type, "__doc__", ds);
+                        py.Py_DecRef(ds);
+                    }
+                }
+
                 // Add to module
                 if (py.PyModule_AddObject(mod, exceptions[i].name, exc_type) < 0) {
                     py.Py_DecRef(exc_type);

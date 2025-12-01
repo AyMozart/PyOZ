@@ -7,6 +7,7 @@ on:
             - "src/lib/**"
             - "src/cli/**"
             - "src/tests.zig"
+            - "src/tests_abi3.zig"
             - "examples/**"
             - "build.zig"
             - "build.zig.zon"
@@ -66,6 +67,44 @@ jobs:
 
             - name: Run tests
               run: zig build test
+
+    test-abi3:
+        name: Test ABI3 (Python ${{ matrix.python-version }})
+        runs-on: ubuntu-latest
+        strategy:
+            fail-fast: false
+            matrix:
+                python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Setup Zig
+              uses: goto-bus-stop/setup-zig@v2
+              with:
+                  version: 0.15.2
+
+            - name: Setup Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: ${{ matrix.python-version }}
+
+            - name: Install numpy
+              run: pip install numpy
+
+            - name: Cache Zig
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cache/zig
+                      zig-cache
+                  key: zig-cache-${{ runner.os }}-abi3-py${{ matrix.python-version }}-${{ hashFiles('build.zig', 'build.zig.zon') }}
+                  restore-keys: |
+                      zig-cache-${{ runner.os }}-abi3-py${{ matrix.python-version }}-
+
+            - name: Run ABI3 tests
+              run: zig build test_abi3
 
     build:
         name: Build Library & CLI

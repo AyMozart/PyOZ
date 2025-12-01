@@ -360,6 +360,46 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_tests.step);
 
     // ========================================================================
+    // ABI3 Test Suite
+    // ========================================================================
+
+    const tests_abi3 = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tests_abi3.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    // Add build_options for ABI3 (always false for tests - we use embedding)
+    const test_abi3_options_for_abi3_tests = b.addOptions();
+    test_abi3_options_for_abi3_tests.addOption(bool, "abi3", false);
+    tests_abi3.root_module.addOptions("build_options", test_abi3_options_for_abi3_tests);
+
+    // Enable sanitizers if requested
+    if (sanitize) {
+        tests_abi3.root_module.sanitize_c = .full;
+    }
+
+    // Link against Python for embedding
+    if (python_config) |python| {
+        tests_abi3.addIncludePath(.{ .cwd_relative = python.include_dir });
+        tests_abi3.root_module.addIncludePath(.{ .cwd_relative = python.include_dir });
+        if (python.lib_dir) |lib_dir| {
+            tests_abi3.addLibraryPath(.{ .cwd_relative = lib_dir });
+        }
+        tests_abi3.linkSystemLibrary(python.lib_name);
+    }
+    tests_abi3.linkLibC();
+
+    const run_tests_abi3 = b.addRunArtifact(tests_abi3);
+    // ABI3 tests depend on the ABI3 example module being built first
+    run_tests_abi3.step.dependOn(&install_example_abi3.step);
+
+    const test_abi3_step = b.step("test_abi3", "Run the PyOZ ABI3 test suite");
+    test_abi3_step.dependOn(&run_tests_abi3.step);
+
+    // ========================================================================
     // CLI Executable (pyoz command)
     // ========================================================================
 
